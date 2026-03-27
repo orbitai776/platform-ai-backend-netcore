@@ -1,0 +1,31 @@
+# Build output
+bin/
+obj/
+
+# Visual Studio
+.vs/
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# OS files
+*.swp
+*.lock.json
+*.log
+*.tmp
+*.user
+*.cache
+*.DS_Store
+Thumbs.db
+
+# Rider / JetBrains
+.idea/
+
+# Node (nếu có frontend)
+node_modules/
+
+# Docker
+docker-compose*
+Dockerfile*
