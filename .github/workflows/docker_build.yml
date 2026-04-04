@@ -51,7 +51,7 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
           pwd
-          ls -la
+          ls ~/.ssh -la
           
       - name: Deploy to VPS
         env:
@@ -71,7 +71,8 @@ jobs:
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
           
         run: |
-          ls -la
+          pwd
+          ls -la ~/.ssh
           # Deploy commands
           ssh -v -i ~/.ssh/deploy_key ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << EOF
             echo "🔑 Logging to GHCR..."
