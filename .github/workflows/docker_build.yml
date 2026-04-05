@@ -85,9 +85,8 @@ jobs:
             docker run -d \
               --name $CONTAINER \
               --restart unless-stopped \
-              -p $PORT:3000 \
+              -p $PORT:8080 \
               -e NODE_ENV=$ENV \
-              -e PORT=3000 \
               -e FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID \
               -e FIREBASE_CLIENT_EMAIL=$FIREBASE_CLIENT_EMAIL \
               -e FIREBASE_PRIVATE_KEY="$FIREBASE_PRIVATE_KEY" \
