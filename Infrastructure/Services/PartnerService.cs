@@ -276,7 +276,7 @@ namespace platform_ai_backend_netcore.Infrastructure.Services
 
             if (partner is null)
                 return ServiceResult<PartnerDto>.Fail("Part not found");
-            if (!string.IsNullOrWhiteSpace(dto.Status)) partner.Status = partner.Status.ToLower();
+            if (!string.IsNullOrWhiteSpace(dto.Status)) partner.Status = dto.Status.ToLower();
             if (!string.IsNullOrWhiteSpace(dto.Email))
                 partner.Email = dto.Email;
 
