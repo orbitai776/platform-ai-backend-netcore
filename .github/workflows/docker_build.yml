@@ -62,11 +62,12 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
           FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
-          REDIS: ${{ secrets.REDIS_URL }}
-          JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
-          JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN }}
-          JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
-          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          CONNECTIONSTRINGS__POSTGRESQL: ${{ secrets.CONNECTIONSTRINGS__POSTGRESQL }}
+         # REDIS: ${{ secrets.REDIS_URL }}
+          Jwt__Audience: ${{ secrets.JWT_AUDIENCE }}
+        #  JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN }}
+          Jwt__Issuer: ${{ secrets.JWT_ISSUER }}
+          Jwt__Secret: ${{ secrets.JWT_SECRET_KEY }}
           
         run: |
           # Deploy commands
@@ -86,16 +87,16 @@ jobs:
               --name $CONTAINER \
               --restart unless-stopped \
               -p $PORT:8080 \
-              -e NODE_ENV=$ENV \
+              -e ASPNETCORE_ENVIRONMENT=$ENV \
               -e FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID \
               -e FIREBASE_CLIENT_EMAIL=$FIREBASE_CLIENT_EMAIL \
               -e FIREBASE_PRIVATE_KEY="$FIREBASE_PRIVATE_KEY" \
               -e ASPNETCORE_ENVIRONMENT=$ENV \
-              -e REDIS_URL=$REDIS \
-              -e JWT_AUDIENCE=$JWT_AUDIENCE \
-              -e JWT_EXPIRES_IN=$JWT_EXPIRES_IN \
-              -e JWT_ISSUER=$JWT_ISSUER \
-              -e JWT_SECRET_KEY=$JWT_SECRET_KEY \
+              -e Jwt__Audience=$JWT__AUDIENCE \
+              -e ADMINAUTH__HEADERNAME=${{ vars.ADMINAUTH__HEADERNAME }}
+              -e Jwt__Issuer=$JWT__ISSUER \
+              -e Jwt__Secret=$JWT__SECRET \
+              -e CONNECTIONSTRINGS__POSTGRESQ=$CONNECTIONSTRINGS__POSTGRESQL
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               ghcr.io/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
