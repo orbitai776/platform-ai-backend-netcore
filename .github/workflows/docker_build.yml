@@ -64,10 +64,10 @@ jobs:
           FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
           CONNECTIONSTRINGS__POSTGRESQL: ${{ secrets.CONNECTIONSTRINGS__POSTGRESQL }}
          # REDIS: ${{ secrets.REDIS_URL }}
-          Jwt__Audience: ${{ secrets.JWT_AUDIENCE }}
-        #  JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN }}
-          Jwt__Issuer: ${{ secrets.JWT_ISSUER }}
-          Jwt__Secret: ${{ secrets.JWT_SECRET_KEY }}
+         # JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN }}
+          Jwt__Issuer: ${{ secrets.JWT__ISSUER }}
+          Jwt__Secret: ${{ secrets.JWT__SECRET_KEY }}
+          Jwt__Audience: ${{ secrets.JWT__AUDIENCE }}
           
         run: |
           # Deploy commands
