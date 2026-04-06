@@ -68,6 +68,7 @@ jobs:
           Jwt__Issuer: ${{ secrets.JWT__ISSUER }}
           Jwt__Secret: ${{ secrets.JWT__SECRET_KEY }}
           Jwt__Audience: ${{ secrets.JWT__AUDIENCE }}
+          CORS__ALLOWEDORIGINS__0: ${{ vars.CORS__ALLOWEDORIGINS__0 }}
           
         run: |
           # Deploy commands
@@ -96,7 +97,8 @@ jobs:
               -e ADMINAUTH__HEADERNAME=${{ vars.ADMINAUTH__HEADERNAME }}
               -e Jwt__Issuer=$JWT__ISSUER \
               -e Jwt__Secret=$JWT__SECRET \
-              -e CONNECTIONSTRINGS__POSTGRESQ=$CONNECTIONSTRINGS__POSTGRESQL
+              -e CONNECTIONSTRINGS__POSTGRESQ=$CONNECTIONSTRINGS__POSTGRESQL \
+              -e CORS__ALLOWEDORIGINS__0=$CORS__ALLOWEDORIGINS__0
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               ghcr.io/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
