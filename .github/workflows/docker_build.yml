@@ -85,23 +85,23 @@ jobs:
             
             echo "🚀 Starting new container on port $PORT..."
             docker run -d \
-              --name $CONTAINER \
-              --restart unless-stopped \
-              -p $PORT:8080 \
-              -e ASPNETCORE_ENVIRONMENT=$ENV \
-              -e FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID \
-              -e FIREBASE_CLIENT_EMAIL=$FIREBASE_CLIENT_EMAIL \
-              -e FIREBASE_PRIVATE_KEY="$FIREBASE_PRIVATE_KEY" \
-              -e ASPNETCORE_ENVIRONMENT=$ENV \
-              -e Jwt__Audience=$JWT__AUDIENCE \
-              -e ADMINAUTH__HEADERNAME=${{ vars.ADMINAUTH__HEADERNAME }} \
-              -e Jwt__Issuer=$JWT__ISSUER \
-              -e Jwt__Secret=$JWT__SECRET \
-              -e CONNECTIONSTRINGS__POSTGRESQ=$CONNECTIONSTRINGS__POSTGRESQL \
-              -e CORS__ALLOWEDORIGINS__0=$CORS__ALLOWEDORIGINS__0 \
-              --log-opt max-size=10m \
-              --log-opt max-file=3 \
-              ghcr.io/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            --name $CONTAINER \
+            --restart unless-stopped \
+            -p $PORT:8080 \
+            -e ASPNETCORE_ENVIRONMENT=$ENV \
+            -e FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID \
+            -e FIREBASE_CLIENT_EMAIL=$FIREBASE_CLIENT_EMAIL \
+            -e FIREBASE_PRIVATE_KEY="$FIREBASE_PRIVATE_KEY" \
+            -e ASPNETCORE_ENVIRONMENT=$ENV \
+            -e Jwt__Audience=$JWT__AUDIENCE \
+            -e ADMINAUTH__HEADERNAME=${{ vars.ADMINAUTH__HEADERNAME }} \
+            -e Jwt__Issuer=$JWT__ISSUER \
+            -e Jwt__Secret=$JWT__SECRET \
+            -e CONNECTIONSTRINGS__POSTGRESQ=$CONNECTIONSTRINGS__POSTGRESQL \
+            -e CORS__ALLOWEDORIGINS__0=$CORS__ALLOWEDORIGINS__0 \
+            --log-opt max-size=10m \
+            --log-opt max-file=3 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             
             echo "✅ Deployment complete!"
             echo "📋 Container status:"
