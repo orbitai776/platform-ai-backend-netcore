@@ -91,6 +91,9 @@ jobs:
               -e ASPNETCORE_ENVIRONMENT=$ENV \
               -e Jwt__Audience=$Jwt__Audience \
               -e ADMINAUTH__HEADERNAME="$ADMINAUTH__HEADERNAME" \
+              -e FIREBASE_CLIENT_EMAiL="$FIREBASE_CLIENT_EMAIL" \
+              -e FIREBASE_PRIVATE_KEY="FIREBASE_PRIVATE_KEY" \
+              -e FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
               -e Jwt__Issuer="$Jwt__Issuer" \
               -e Jwt__Secret="$Jwt__Secret" \
               -e CONNECTIONSTRINGS__POSTGRESQL="$CONNECTIONSTRINGS__POSTGRESQL" \
