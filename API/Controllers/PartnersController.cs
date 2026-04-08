@@ -6,7 +6,11 @@ using platform_ai_backend_netcore.Application.Partners.DTOs;
 namespace AdminService.API.Controllers;
 
 [ApiController]
+<<<<<<< HEAD
 [Route("admin/partners")]
+=======
+[Route("api/v1/admin/partners")] 
+>>>>>>> feature/Sprint02-NguyenTriTinh-UsersAndPartners_Management
 [Produces("application/json")]
 public class PartnersController(IPartnerService partnerService) : ControllerBase
 {
