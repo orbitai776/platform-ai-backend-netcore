@@ -7,25 +7,25 @@ namespace AdminService.API.Middleware;
 
 public class JwtAuthMiddleware(
     RequestDelegate next,
-    IConfiguration config,
     ILogger<JwtAuthMiddleware> logger)
 {
     private static readonly string[] _skipPaths = ["/swagger", "/health"];
 
+    // Đọc trực tiếp từ env — không inject IConfiguration
     private readonly TokenValidationParameters _validationParams = new()
     {
         ValidateIssuerSigningKey = true,
-        IssuerSigningKey         = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(config["Jwt:Secret"]!)),
+        IssuerSigningKey = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(
+                Environment.GetEnvironmentVariable("JWT_SECRET")!)),
 
-        ValidateIssuer   = true,
-        ValidIssuer      = config["Jwt:Issuer"],
+        ValidateIssuer = true,
+        ValidIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER"),
 
         ValidateAudience = true,
-        ValidAudience    = config["Jwt:Audience"],
-
-        ValidateLifetime      = true,
-        ClockSkew             = TimeSpan.FromSeconds(30),
+        ValidAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE"),
+        ValidateLifetime = true,
+        ClockSkew = TimeSpan.FromSeconds(30),
         RequireExpirationTime = true,
     };
 
@@ -52,25 +52,29 @@ public class JwtAuthMiddleware(
 
         try
         {
-            var handler   = new JwtSecurityTokenHandler();
+            var handler = new JwtSecurityTokenHandler();
             var principal = handler.ValidateToken(token, _validationParams, out _);
 
             var adminId = principal.FindFirst("uid")?.Value;
-            var roles   = principal.Claims
+            var roles = principal.Claims
                 .Where(c => c.Type == "roles")
                 .Select(c => c.Value)
                 .ToList();
             var email = principal.FindFirst("email")?.Value;
-            var name  = principal.FindFirst("name")?.Value;
+            var name = principal.FindFirst("name")?.Value;
 
             // TODO Sprint 03: bật lại check role sau khi có child-admin design
-            // var isAdmin = roles.Any(r => r == "admin" || r == "super_admin");
-            // if (!isAdmin) { return 403 }
+            var isAdmin = roles.Any(r => r == "admin" || r == "super_admin");
+            if (!isAdmin)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
 
-            ctx.Items["AdminId"]   = adminId;
+            ctx.Items["AdminId"] = adminId;
             ctx.Items["AdminRole"] = string.Join(",", roles);
-            ctx.Items["Email"]     = email;
-            ctx.Items["Name"]      = name;
+            ctx.Items["Email"] = email;
+            ctx.Items["Name"] = name;
 
             await next(ctx);
         }
