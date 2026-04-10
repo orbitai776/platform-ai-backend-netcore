@@ -44,21 +44,21 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
             var kw = query.Search.ToLower();
             q = q.Where(u =>
                 (u.FullName != null && u.FullName.ToLower().Contains(kw)) ||
-                (u.Email    != null && u.Email.ToLower().Contains(kw)));
+                (u.Email != null && u.Email.ToLower().Contains(kw)));
         }
 
         var total = await q.CountAsync();
-        var data  = await q
+        var data = await q
             .OrderByDescending(u => u.CreatedAt)
             .Skip((query.Page - 1) * query.Limit)
             .Take(query.Limit)
             .Select(u => new UserDto
             {
-                Id        = u.Id,
-                Email     = u.Email,
-                FullName  = u.FullName,
+                Id = u.Id,
+                Email = u.Email,
+                FullName = u.FullName,
                 AvatarUrl = u.AvatarUrl,
-                Status    = u.Status,
+                Status = u.Status,
                 CreatedAt = u.CreatedAt,
                 UpdatedAt = u.UpdatedAt,
             })
@@ -66,9 +66,9 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
 
         var result = new PagedResult<UserDto>
         {
-            Data  = data,
+            Data = data,
             Total = total,
-            Page  = query.Page,
+            Page = query.Page,
             Limit = query.Limit,
         };
 
@@ -99,23 +99,23 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
 
         var dto = new UserDetailDto
         {
-            Id          = user.Id,
+            Id = user.Id,
             FirebaseUid = user.FirebaseUid,
-            Email       = user.Email,
-            FullName    = user.FullName,
-            AvatarUrl   = user.AvatarUrl,
-            Status      = user.Status,
-            CreatedAt   = user.CreatedAt,
-            UpdatedAt   = user.UpdatedAt,
+            Email = user.Email,
+            FullName = user.FullName,
+            AvatarUrl = user.AvatarUrl,
+            Status = user.Status,
+            CreatedAt = user.CreatedAt,
+            UpdatedAt = user.UpdatedAt,
             ActiveSessions = user.Sessions.Select(s => new UserSessionDto
             {
-                Id           = s.Id,
-                DeviceName   = s.DeviceName,
-                IpAddress    = s.IpAddress,
+                Id = s.Id,
+                DeviceName = s.DeviceName,
+                IpAddress = s.IpAddress,
                 LastActiveAt = s.LastActiveAt,
-                ExpiresAt    = s.ExpiresAt,
-                IsRevoked    = s.IsRevoked,
-                CreatedAt    = s.CreatedAt,
+                ExpiresAt = s.ExpiresAt,
+                IsRevoked = s.IsRevoked,
+                CreatedAt = s.CreatedAt,
             }).ToList(),
         };
 
@@ -143,16 +143,19 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
         // Xóa detail cache — list cache tự expire sau 5 phút
         await SafeRemoveCacheAsync($"detail:{id}");
 
-        return ServiceResult<UserDto>.Ok(new UserDto
+        var userDto = new UserDto
         {
-            Id        = user.Id,
-            Email     = user.Email,
-            FullName  = user.FullName,
+            Id = user.Id,
+            Email = user.Email,
+            FullName = user.FullName,
             AvatarUrl = user.AvatarUrl,
-            Status    = user.Status,
+            Status = user.Status,
             CreatedAt = user.CreatedAt,
             UpdatedAt = user.UpdatedAt,
-        });
+        };
+
+        // Trả về success kèm message và data
+        return ServiceResult<UserDto>.Ok(userDto, "User updated successfully");
     }
 
     // ── DELETE ────────────────────────────────────────────────
@@ -162,7 +165,7 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
         if (user is null)
             return ServiceResult<bool>.Fail("User not found");
 
-        user.Status    = "deleted";
+        user.Status = "deleted";
         user.UpdatedAt = DateTime.UtcNow;
 
         var sessions = await db.UserSessions
