@@ -70,7 +70,7 @@ jobs:
           JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
           CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
           CONTAINER_PORT: ${{ vars.CONTAINER_PORT }}
-
+          GATEWAY_URL: ${{ secrets.GATEWAY_URL }}
           
         run: |
           # Deploy commands
@@ -95,6 +95,7 @@ jobs:
               -e JWT_SECRET="$JWT_SECRET" \
               -e JWT_AUDIENCE="$JWT_AUDIENCE" \
               -e REDIS_CONNECTION="$REDIS_CONNECTION" \
+              -e GATEWAY_URL="$GATEWAY_URL" \
               -e POSTGRES_CONNECTION="$POSTGRES_CONNECTION" \
               -e CORS_ORIGINS="$CORS_ORIGINS" \
               --log-opt max-size=10m \
