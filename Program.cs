@@ -36,7 +36,7 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
 builder.Services.AddStackExchangeRedisCache(opt =>
 {
     opt.Configuration = Environment.GetEnvironmentVariable("REDIS_CONNECTION");
-    opt.InstanceName  = "AdminService:";
+    opt.InstanceName = "AdminService:";
 });
 
 // ── JWT ───────────────────────────────────────────────────────
@@ -50,12 +50,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 Encoding.UTF8.GetBytes(
                     Environment.GetEnvironmentVariable("JWT_SECRET")!)),
 
-            ValidateIssuer   = true,
-            ValidIssuer      = Environment.GetEnvironmentVariable("JWT_ISSUER"),
+            ValidateIssuer = true,
+            ValidIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER"),
 
-            ValidateAudience      = true,
-            ValidateLifetime      = true,
-            ClockSkew             = TimeSpan.FromSeconds(30),
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30),
             RequireExpirationTime = true,
         };
     });
@@ -66,71 +66,71 @@ builder.Services.AddAuthorization();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IPartnerService, PartnerService>();
 
-// ── Controllers + Swagger ─────────────────────────────────────
+// ── Controllers─────────────────────────────────────
 builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new()
-    {
-        Title       = "Admin Service – Users & Partners",
-        Version     = "v1",
-        Description = "Sprint 02 | Supabase PostgreSQL + Redis",
-    });
 
-    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
-    {
-        Type         = SecuritySchemeType.Http,
-        Scheme       = "bearer",
-        BearerFormat = "JWT",
-        Description  = "Nhập Internal JWT token từ Gateway",
-    });
-
-    c.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
-        {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id   = "Bearer"
-                }
-            },
-            []
-        }
-    });
-});
-
-// ── CORS ──────────────────────────────────────────────────────
-var originsRaw = Environment.GetEnvironmentVariable("CORS_ORIGINS") ?? "";
-var origins    = originsRaw
-    .Split(',', StringSplitOptions.RemoveEmptyEntries)
-    .Select(o => o.Trim())
-    .ToArray();
+// ── CORS Setup ────────────────────────────────────────────────
+var environment = builder.Environment.EnvironmentName;
+Console.WriteLine($"[CORS] Environment: {environment}");
 
 builder.Services.AddCors(opt =>
-    opt.AddPolicy("Frontend", p =>
-        p.WithOrigins(origins)
-         .AllowAnyMethod()
-         .AllowAnyHeader()
-         .WithExposedHeaders("Authorization")
-    )
-);
+{
+    if (builder.Environment.IsDevelopment())
+    {
+        opt.AddPolicy("AllowAll", policy =>
+        {
+            policy.AllowAnyOrigin()
+            .AllowAnyHeader()
+            .AllowAnyMethod();
 
+        });
+        Console.WriteLine("[CORS] Development mode: AllowAll policy enabled");
+    }
+    else
+    {
+        var gatewayUrls = Environment.GetEnvironmentVariable("GATEWAY_URLS") ?? "";
+        var allowedOrigins = gatewayUrls
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(o => o.Trim())
+                            .ToArray();
+        if (allowedOrigins.Length == 0)
+        {
+            Console.WriteLine("[ERROR] PRODUCTION: GATEWAY_URLS not configured!");
+            throw new InvalidOperationException(
+                "GATEWAY_URLS environment variable is required in production"
+            );
+        }
+        opt.AddPolicy("GatewayOnly", policy =>
+        {
+            policy.WithOrigins(allowedOrigins)
+                  .AllowAnyMethod()
+                  .AllowAnyHeader()
+                  .WithExposedHeaders("Authorization", "X-RateLimit-Remaining")
+                  .AllowCredentials();
+        });
+
+        Console.WriteLine($"[CORS] Production mode: GatewayOnly policy with origins: {string.Join(", ", allowedOrigins)}");
+    }
+}
+);
 // ── Health check ──────────────────────────────────────────────
 builder.Services.AddHealthChecks()
     .AddNpgSql(Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")!);
 
 var app = builder.Build();
-
-app.UseSwagger();
-app.UseSwaggerUI(c =>
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Admin Service v1")
-);
-
+// ── Middleware Pipeline ───────────────────────────────────────
 app.MapHealthChecks("/health");
-app.UseCors("Frontend");
+
+// CORS
+if (builder.Environment.IsDevelopment())
+{
+    app.UseCors("AllowAll");
+}
+else
+{
+    app.UseCors("GatewayOnly");
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<JwtAuthMiddleware>();

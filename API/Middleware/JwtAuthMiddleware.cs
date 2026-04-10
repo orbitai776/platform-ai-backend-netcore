@@ -64,12 +64,12 @@ public class JwtAuthMiddleware(
             var name = principal.FindFirst("name")?.Value;
 
             // TODO Sprint 03: bật lại check role sau khi có child-admin design
-            var isAdmin = roles.Any(r => r == "admin" || r == "super_admin");
-            if (!isAdmin)
-            {
-                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
-                return;
-            }
+            // var isAdmin = roles.Any(r => r == "admin" || r == "super_admin");
+            // if (!isAdmin)
+            // {
+            //     ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            //     return;
+            // }
 
             ctx.Items["AdminId"] = adminId;
             ctx.Items["AdminRole"] = string.Join(",", roles);
