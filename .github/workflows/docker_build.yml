@@ -62,14 +62,16 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
           FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
-          CONNECTIONSTRINGS__POSTGRESQL: ${{ secrets.CONNECTIONSTRINGS__POSTGRESQL }}
-         # REDIS: ${{ secrets.REDIS_URL }}
+          POSTGRES_CONNECTION: ${{ secrets.POSTGRES_CONNECTION }}
+          REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}
          # JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN }}
-          Jwt__Issuer: ${{ secrets.JWT__ISSUER }}
-          Jwt__Secret: ${{ secrets.JWT__SECRET }}
-          Jwt__Audience: ${{ secrets.JWT__AUDIENCE }}
-          CORS__ALLOWEDORIGINS__0: ${{ vars.CORS__ALLOWEDORIGINS__0 }}
-          ADMINAUTH__HEADERNAME: ${{ vars.ADMINAUTH__HEADERNAME }}
+          JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
+          CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
+          CONTAINER_PORT: ${{ vars.CONTAINER_PORT }}
+
+          
         run: |
           # Deploy commands
           ssh -v -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }} << EOF
@@ -87,17 +89,14 @@ jobs:
             docker run -d \
               --name $CONTAINER \
               --restart unless-stopped \
-              -p $PORT:8080 \
+              -p $PORT:$CONTAINER_PORT \
               -e ASPNETCORE_ENVIRONMENT=$ENV \
-              -e Jwt__Audience=$Jwt__Audience \
-              -e ADMINAUTH__HEADERNAME="$ADMINAUTH__HEADERNAME" \
-              -e FIREBASE_CLIENT_EMAiL="$FIREBASE_CLIENT_EMAIL" \
-              -e FIREBASE_PRIVATE_KEY="FIREBASE_PRIVATE_KEY" \
-              -e FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
-              -e Jwt__Issuer="$Jwt__Issuer" \
-              -e Jwt__Secret="$Jwt__Secret" \
-              -e CONNECTIONSTRINGS__POSTGRESQL="$CONNECTIONSTRINGS__POSTGRESQL" \
-              -e CORS__ALLOWEDORIGINS__0="$CORS__ALLOWEDORIGINS__0" \
+              -e JWT_ISSUER="$JWT_ISSUER" \
+              -e JWT_SECRET="$JWT_SECRET" \
+              -e JWT_AUDIENCE="$JWT_AUDIENCE" \
+              -e REDIS_CONNECTION="$REDIS_CONNECTION" \
+              -e POSTGRES_CONNECTION="$POSTGRES_CONNECTION" \
+              -e CORS_ORIGINS="$CORS_ORIGINS" \
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               ghcr.io/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
