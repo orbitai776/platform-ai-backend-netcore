@@ -6,11 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace AdminService.API.Controllers;
 
 [ApiController]
-<<<<<<< HEAD
-[Route("admin/users")]
-=======
 [Route("api/v1/admin/users")] 
->>>>>>> feature/Sprint02-NguyenTriTinh-UsersAndPartners_Management
 [Produces("application/json")]
 public class UsersController(IUserService userService) : ControllerBase
 {
