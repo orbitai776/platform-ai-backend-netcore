@@ -6,7 +6,7 @@ using platform_ai_backend_netcore.Application.Partners.DTOs;
 namespace AdminService.API.Controllers;
 
 [ApiController]
-[Route("api/v1/admin/partners")] 
+[Route("v1/api/admin/partners")] 
 [Produces("application/json")]
 public class PartnersController(IPartnerService partnerService) : ControllerBase
 {

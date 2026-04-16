@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace AdminService.API.Controllers;
 
 [ApiController]
-[Route("api/v1/admin/users")] 
+[Route("v1/api/admin/users")] 
 [Produces("application/json")]
 public class UsersController(IUserService userService) : ControllerBase
 {
