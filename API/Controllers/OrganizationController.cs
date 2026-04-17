@@ -9,7 +9,7 @@ using platform_ai_backend_netcore.Application.Partners.DTOs;
 namespace platform_ai_backend_netcore.API.Controllers
 {
     [ApiController]
-    [Route("v1/api/admin/partners/oranizations")] 
+    [Route("v1/api/admin/partners/organizations")] 
     public class OrganizationController(IOrganizationService organizationService) : ControllerBase
     {
         /// <summary>Lấy thông tin tổ chức (organization profile) của partner</summary>
