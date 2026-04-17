@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using platform_ai_backend_netcore.Application.Organization.Interfaces;
+using platform_ai_backend_netcore.Application.Tokens.Interfaces;
 using platform_ai_backend_netcore.Infrastructure.Data;
 using platform_ai_backend_netcore.Infrastructure.Services;
 
@@ -40,7 +42,11 @@ builder.Services.AddStackExchangeRedisCache(opt =>
 // ── DI ────────────────────────────────────────────────────────
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IPartnerService, PartnerService>();
-
+// ── Organization ─────────────────────────────────────────────
+builder.Services.AddScoped<IOrganizationService, OrganizationService>();
+ 
+// ── Token ────────────────────────────────────────────────────
+builder.Services.AddScoped<ITokenService, TokenService>();
 // ── Controllers ────────────────────────────────────────────────
 builder.Services.AddControllers();
 

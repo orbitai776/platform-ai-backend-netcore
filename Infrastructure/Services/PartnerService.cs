@@ -316,7 +316,7 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
     }
 
     // ── ADJUST TOKEN ──────────────────────────────────────────
-    public async Task<ServiceResult<int>> AdjustTokenAsync(Guid partnerId, AdjustTokenDto dto)
+    public async Task<ServiceResult<int>> AdjustTokenAsync(Guid partnerId, AdjustTokenRequestDto dto)
     {
         var partner = await db.Partners.FirstOrDefaultAsync(p => p.Id == partnerId);
         if (partner is null)

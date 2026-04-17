@@ -11,5 +11,5 @@ public interface IPartnerService
     Task<ServiceResult<PartnerDto>> UpdateAsync(Guid id, UpdatePartnerDto dto);
     Task<ServiceResult<bool>> DeleteAsync(Guid id);
     Task<ServiceResult<TokenInfoDto>> GetTokensAsync(Guid partnerId);
-    Task<ServiceResult<int>> AdjustTokenAsync(Guid partnerId, AdjustTokenDto dto);
+    Task<ServiceResult<int>> AdjustTokenAsync(Guid partnerId, AdjustTokenRequestDto dto);
 }

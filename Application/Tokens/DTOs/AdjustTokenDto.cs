@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace platform_ai_backend_netcore.Application.Partners.DTOs
 {
-    public class AdjustTokenDto
+    public class AdjustTokenRequestDto
     {
         [Required(ErrorMessage = "Amount là bắt buộc")]
         [Range(-1000000, 1000000, ErrorMessage = "Amount phải từ -1,000,000 đến 1,000,000")]

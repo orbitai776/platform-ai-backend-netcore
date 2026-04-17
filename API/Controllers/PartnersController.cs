@@ -51,29 +51,4 @@ public class PartnersController(IPartnerService partnerService) : ControllerBase
             : NotFound(new { message = result.Message });
     }
 
-    /// <summary>Xem token balance + lịch sử giao dịch của partner</summary>
-    [HttpGet("{id:guid}/tokens")]
-    public async Task<IActionResult> GetTokens(Guid id)
-    {
-        var result = await partnerService.GetTokensAsync(id);
-        return result.Success
-            ? Ok(result.Data)
-            : NotFound(new { message = result.Message });
-    }
-
-    /// <summary>Điều chỉnh token thủ công — amount dương=cộng, âm=trừ</summary>
-    [HttpPost("{id:guid}/tokens/adjust")]
-    public async Task<IActionResult> AdjustToken(Guid id, [FromBody] AdjustTokenDto dto)
-    {
-        if (!ModelState.IsValid)
-            return BadRequest(ModelState);
-
-        if (dto.Amount == 0)
-            return BadRequest(new { message = "Amount không được bằng 0" });
-
-        var result = await partnerService.AdjustTokenAsync(id, dto);
-        return result.Success
-            ? Ok(new { newBalance = result.Data, adjusted = dto.Amount })
-            : BadRequest(new { message = result.Message });
-    }
 }
