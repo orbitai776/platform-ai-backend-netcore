@@ -71,6 +71,9 @@ jobs:
           CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
           CONTAINER_PORT: ${{ vars.CONTAINER_PORT }}
           GATEWAY_URLS: ${{ secrets.GATEWAY_URL }}
+          OLTP_URL: ${{  secrets.OLTP_URL }} 
+          OLTP_AUTH: ${{ secrets.OLTP_AUTH }}
+          OLTP_SERVICE_NAME: ${{ vars.OLTP_SERVICE_NAME }}
           
         run: |
           # Deploy commands
@@ -86,6 +89,7 @@ jobs:
             docker rm $CONTAINER 2>/dev/null || true
             
             echo "🚀 Starting new container on port $PORT..."
+            
             docker run -d \
               --name $CONTAINER \
               --restart unless-stopped \
@@ -97,6 +101,9 @@ jobs:
               -e REDIS_CONNECTION="$REDIS_CONNECTION" \
               -e GATEWAY_URLS="$GATEWAY_URL" \
               -e POSTGRES_CONNECTION="$POSTGRES_CONNECTION" \
+              -e OLTP_URL="$OLTP_URL" \
+              -e OLTP_AUTH="$OLTP_AUTH" \
+              -e OLTP_SERVICE_NAME="$OLTP_SERVICE_NAME" \
               -e CORS_ORIGINS="$CORS_ORIGINS" \
               --log-opt max-size=10m \
               --log-opt max-file=3 \
