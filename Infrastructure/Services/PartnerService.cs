@@ -1,41 +1,34 @@
 // Infrastructure/Services/PartnerService.cs
-using System.Text.Json;
 using AdminService.Application.Common;
 using AdminService.Application.Partners;
 using AdminService.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Distributed;
 using platform_ai_backend_netcore.Application.Partners.DTOs;
+using platform_ai_backend_netcore.Infrastructure.Cache;
 using platform_ai_backend_netcore.Infrastructure.Data;
 
 namespace platform_ai_backend_netcore.Infrastructure.Services;
 
-public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartnerService
+public class PartnerService(
+    AppDbContext               db,
+    ICacheService              cache,
+    ILogger<PartnerService>    logger) : IPartnerService
 {
-    private static readonly DistributedCacheEntryOptions _listOpts = new()
-    {
-        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5)
-    };
+    private static readonly TimeSpan _listTtl   = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan _detailTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan _tokenTtl  = TimeSpan.FromMinutes(2);
 
-    private static readonly DistributedCacheEntryOptions _detailOpts = new()
-    {
-        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)
-    };
-
-    private static readonly DistributedCacheEntryOptions _tokenOpts = new()
-    {
-        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2) // token thay đổi thường xuyên hơn
-    };
-
-    // ── GET ALL ───────────────────────────────────────────────
+    // ── GET ALL ────────────────────────────────────────────────
     public async Task<PagedResult<PartnerDto>> GetAllAsync(QueryPartnerDto query)
     {
-        var cacheKey = $"partners:list:page={query.Page}:limit={query.Limit}" +
-                       $":status={query.Status ?? ""}:search={query.Search ?? ""}";
-
-        var cached = await SafeGetCacheAsync(cacheKey);
+        var key    = CacheKeys.PartnerList(query.Page, query.Limit,
+                                           query.Status ?? "", query.Search ?? "");
+        var cached = await cache.GetAsync<PagedResult<PartnerDto>>(key);
         if (cached is not null)
-            return JsonSerializer.Deserialize<PagedResult<PartnerDto>>(cached)!;
+        {
+            logger.LogDebug("[PartnerService] GetAll served from cache | page={Page}", query.Page);
+            return cached;
+        }
 
         var q = db.Partners
             .AsNoTracking()
@@ -53,6 +46,7 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
                 (p.Email != null && p.Email.ToLower().Contains(kw)));
         }
 
+        // FIX: EF Core DbContext không thread-safe — chạy tuần tự thay vì Task.WhenAll
         var total = await q.CountAsync();
         var data  = await q
             .OrderByDescending(p => p.CreatedAt)
@@ -82,35 +76,41 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
             Limit = query.Limit,
         };
 
-        await SafeSetCacheAsync(cacheKey, JsonSerializer.Serialize(result), _listOpts);
+        await cache.SetAsync(key, result, _listTtl);
+
+        logger.LogInformation(
+            "[PartnerService] GetAll | total={Total} page={Page} limit={Limit}",
+            result.Total, query.Page, query.Limit);
 
         return result;
     }
 
-    // ── GET BY ID ─────────────────────────────────────────────
+    // ── GET BY ID ──────────────────────────────────────────────
     public async Task<ServiceResult<PartnerDetailDto>> GetByIdAsync(Guid id)
     {
-        var cacheKey = $"partners:detail:{id}";
-
-        var cached = await SafeGetCacheAsync(cacheKey);
+        var key    = CacheKeys.PartnerDetail(id);
+        var cached = await cache.GetAsync<PartnerDetailDto>(key);
         if (cached is not null)
-            return ServiceResult<PartnerDetailDto>.Ok(
-                JsonSerializer.Deserialize<PartnerDetailDto>(cached)!);
+        {
+            logger.LogDebug("[PartnerService] GetById cache hit | partnerId={PartnerId}", id);
+            return ServiceResult<PartnerDetailDto>.Ok(cached);
+        }
 
+        // FIX: chạy tuần tự — DbContext không hỗ trợ concurrent queries
         var partner = await db.Partners
             .AsNoTracking()
             .AsSplitQuery()
             .Include(p => p.OwnerUser)
-            .Include(p => p.PartnerServices)
-                .ThenInclude(ps => ps.Service)
+            .Include(p => p.PartnerServices).ThenInclude(ps => ps.Service)
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (partner is null)
+        {
+            logger.LogWarning("[PartnerService] GetById not found | partnerId={PartnerId}", id);
             return ServiceResult<PartnerDetailDto>.Fail("Partner not found");
+        }
 
-        var (balance, topup, used) = await CalcTokenBalance(id);
-
-        var recentTx = await db.TokenTransactions
+        var transactions = await db.TokenTransactions
             .AsNoTracking()
             .Where(t => t.PartnerId == id)
             .OrderByDescending(t => t.CreatedAt)
@@ -126,7 +126,7 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
             })
             .ToListAsync();
 
-        var recentPayments = await db.Payments
+        var payments = await db.Payments
             .AsNoTracking()
             .Where(p => p.PartnerId == id)
             .OrderByDescending(p => p.CreatedAt)
@@ -143,72 +143,84 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
             })
             .ToListAsync();
 
+        var topup = await db.Payments
+            .Where(p => p.PartnerId == id && p.Status == "completed")
+            .SumAsync(p => p.TokenAmount ?? 0);
+
+        var used    = await db.TokenTransactions
+            .Where(t => t.PartnerId == id)
+            .SumAsync(t => t.TokensUsed);
+
+        var balance = topup - used;
+
         var dto = new PartnerDetailDto
         {
-            Id               = partner.Id,
-            Name             = partner.Name,
-            Email            = partner.Email,
-            Phone            = partner.Phone,
-            Address          = partner.Address,
-            Description      = partner.Description,
-            Status           = partner.Status,
-            OwnerEmail       = partner.OwnerUser?.Email,
-            OwnerName        = partner.OwnerUser?.FullName,
-            TokenBalance     = balance,
-            TotalTopup       = topup,
-            TotalUsed        = used,
-            CreatedAt        = partner.CreatedAt,
-            UpdatedAt        = partner.UpdatedAt,
-            Services         = partner.PartnerServices.Select(ps => new PartnerServiceSummaryDto
+            Id                 = partner.Id,
+            Name               = partner.Name,
+            Email              = partner.Email,
+            Phone              = partner.Phone,
+            Address            = partner.Address,
+            Description        = partner.Description,
+            Status             = partner.Status,
+            OwnerEmail         = partner.OwnerUser?.Email,
+            OwnerName          = partner.OwnerUser?.FullName,
+            TokenBalance       = balance,
+            TotalTopup         = topup,
+            TotalUsed          = used,
+            CreatedAt          = partner.CreatedAt,
+            UpdatedAt          = partner.UpdatedAt,
+            Services           = partner.PartnerServices.Select(ps => new PartnerServiceSummaryDto
             {
-                Id          = ps.Id,
-                ServiceName = ps.Service?.Name ?? "",
-                ServiceType = ps.Service?.Type ?? "",
-                CustomName  = ps.Name,
-                TokenLimit  = ps.TokenLimit,
-                TokenUsed   = ps.TokenUsed,
-                StorageLimit= ps.StorageLimit,
-                Status      = ps.Status,
-                CreatedAt   = ps.CreatedAt,
+                Id           = ps.Id,
+                ServiceName  = ps.Service?.Name ?? "",
+                ServiceType  = ps.Service?.Type ?? "",
+                CustomName   = ps.Name,
+                TokenLimit   = ps.TokenLimit,
+                TokenUsed    = ps.TokenUsed,
+                StorageLimit = ps.StorageLimit,
+                Status       = ps.Status,
+                CreatedAt    = ps.CreatedAt,
             }).ToList(),
-            RecentTransactions = recentTx,
-            RecentPayments     = recentPayments,
+            RecentTransactions = transactions,
+            RecentPayments     = payments,
         };
 
-        await SafeSetCacheAsync(cacheKey, JsonSerializer.Serialize(dto), _detailOpts);
+        await cache.SetAsync(key, dto, _detailTtl);
+
+        logger.LogInformation(
+            "[PartnerService] GetById | partnerId={PartnerId} name={Name} balance={Balance} services={ServiceCount}",
+            partner.Id, partner.Name, balance, dto.Services.Count);
 
         return ServiceResult<PartnerDetailDto>.Ok(dto);
     }
 
-    // ── UPDATE ────────────────────────────────────────────────
+    // ── UPDATE ─────────────────────────────────────────────────
     public async Task<ServiceResult<PartnerDto>> UpdateAsync(Guid id, UpdatePartnerDto dto)
     {
         var partner = await db.Partners.FirstOrDefaultAsync(p => p.Id == id);
         if (partner is null)
+        {
+            logger.LogWarning("[PartnerService] Update not found | partnerId={PartnerId}", id);
             return ServiceResult<PartnerDto>.Fail("Partner not found");
+        }
 
-        if (!string.IsNullOrWhiteSpace(dto.Name))
-            partner.Name = dto.Name;
-
-        if (!string.IsNullOrWhiteSpace(dto.Status))
-            partner.Status = dto.Status.ToLower();
-
-        if (!string.IsNullOrWhiteSpace(dto.Email))
-            partner.Email = dto.Email;
-
-        if (!string.IsNullOrWhiteSpace(dto.Phone))
-            partner.Phone = dto.Phone;
-
-        if (!string.IsNullOrWhiteSpace(dto.Description))
-            partner.Description = dto.Description;
-
-        if (!string.IsNullOrWhiteSpace(dto.Address))
-            partner.Address = dto.Address;
+        var oldStatus = partner.Status;
+        if (!string.IsNullOrWhiteSpace(dto.Name))        partner.Name        = dto.Name;
+        if (!string.IsNullOrWhiteSpace(dto.Email))       partner.Email       = dto.Email;
+        if (!string.IsNullOrWhiteSpace(dto.Phone))       partner.Phone       = dto.Phone;
+        if (!string.IsNullOrWhiteSpace(dto.Address))     partner.Address     = dto.Address;
+        if (!string.IsNullOrWhiteSpace(dto.Description)) partner.Description = dto.Description;
+        if (!string.IsNullOrWhiteSpace(dto.Status))      partner.Status      = dto.Status;
 
         partner.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
-        await SafeRemoveCacheAsync($"partners:detail:{id}");
+        await cache.RemoveAsync(CacheKeys.PartnerDetail(id));
+        await cache.RemoveByPrefixAsync(CacheKeys.PartnerListPrefix);
+
+        logger.LogInformation(
+            "[PartnerService] Update | partnerId={PartnerId} oldStatus={OldStatus} newStatus={NewStatus}",
+            id, oldStatus, partner.Status);
 
         return ServiceResult<PartnerDto>.Ok(new PartnerDto
         {
@@ -224,12 +236,15 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
         });
     }
 
-    // ── DELETE ────────────────────────────────────────────────
+    // ── DELETE ─────────────────────────────────────────────────
     public async Task<ServiceResult<bool>> DeleteAsync(Guid id)
     {
         var partner = await db.Partners.FirstOrDefaultAsync(p => p.Id == id);
         if (partner is null)
+        {
+            logger.LogWarning("[PartnerService] Delete not found | partnerId={PartnerId}", id);
             return ServiceResult<bool>.Fail("Partner not found");
+        }
 
         partner.Status    = "suspended";
         partner.UpdatedAt = DateTime.UtcNow;
@@ -246,27 +261,44 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
 
         await db.SaveChangesAsync();
 
-        await SafeRemoveCacheAsync($"partners:detail:{id}");
-        await SafeRemoveCacheAsync($"partners:tokens:{id}");
+        await cache.RemoveAsync(
+            CacheKeys.PartnerDetail(id),
+            CacheKeys.PartnerTokens(id));
+        await cache.RemoveByPrefixAsync(CacheKeys.PartnerListPrefix);
+
+        logger.LogInformation(
+            "[PartnerService] Delete (soft) | partnerId={PartnerId} pausedServices={Count}",
+            id, services.Count);
 
         return ServiceResult<bool>.Ok(true);
     }
 
-    // ── GET TOKENS ────────────────────────────────────────────
+    // ── GET TOKENS ─────────────────────────────────────────────
     public async Task<ServiceResult<TokenInfoDto>> GetTokensAsync(Guid partnerId)
     {
-        var cacheKey = $"partners:tokens:{partnerId}";
-
-        var cached = await SafeGetCacheAsync(cacheKey);
+        var key    = CacheKeys.PartnerTokens(partnerId);
+        var cached = await cache.GetAsync<TokenInfoDto>(key);
         if (cached is not null)
-            return ServiceResult<TokenInfoDto>.Ok(
-                JsonSerializer.Deserialize<TokenInfoDto>(cached)!);
+        {
+            logger.LogDebug("[PartnerService] GetTokens cache hit | partnerId={PartnerId}", partnerId);
+            return ServiceResult<TokenInfoDto>.Ok(cached);
+        }
 
         var exists = await db.Partners.AnyAsync(p => p.Id == partnerId);
         if (!exists)
+        {
+            logger.LogWarning("[PartnerService] GetTokens partner not found | partnerId={PartnerId}", partnerId);
             return ServiceResult<TokenInfoDto>.Fail("Partner not found");
+        }
 
-        var (balance, topup, used) = await CalcTokenBalance(partnerId);
+        // FIX: chạy tuần tự
+        var topup = await db.Payments
+            .Where(p => p.PartnerId == partnerId && p.Status == "completed")
+            .SumAsync(p => p.TokenAmount ?? 0);
+
+        var used = await db.TokenTransactions
+            .Where(t => t.PartnerId == partnerId)
+            .SumAsync(t => t.TokensUsed);
 
         var transactions = await db.TokenTransactions
             .AsNoTracking()
@@ -301,6 +333,8 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
             })
             .ToListAsync();
 
+        var balance = topup - used;
+
         var dto = new TokenInfoDto
         {
             Balance      = balance,
@@ -310,24 +344,43 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
             Payments     = payments,
         };
 
-        await SafeSetCacheAsync(cacheKey, JsonSerializer.Serialize(dto), _tokenOpts);
+        await cache.SetAsync(key, dto, _tokenTtl);
+
+        logger.LogInformation(
+            "[PartnerService] GetTokens | partnerId={PartnerId} balance={Balance} topup={Topup} used={Used}",
+            partnerId, balance, topup, used);
 
         return ServiceResult<TokenInfoDto>.Ok(dto);
     }
 
-    // ── ADJUST TOKEN ──────────────────────────────────────────
+    // ── ADJUST TOKEN ───────────────────────────────────────────
     public async Task<ServiceResult<int>> AdjustTokenAsync(Guid partnerId, AdjustTokenRequestDto dto)
     {
         var partner = await db.Partners.FirstOrDefaultAsync(p => p.Id == partnerId);
         if (partner is null)
+        {
+            logger.LogWarning("[PartnerService] AdjustToken partner not found | partnerId={PartnerId}", partnerId);
             return ServiceResult<int>.Fail("Partner not found");
+        }
 
         if (dto.Amount < 0)
         {
-            var (currentBalance, _, _) = await CalcTokenBalance(partnerId);
-            if (Math.Abs(dto.Amount) > currentBalance)
-                return ServiceResult<int>.Fail(
-                    $"Không đủ token. Balance hiện tại: {currentBalance}");
+            var topup = await db.Payments
+                .Where(p => p.PartnerId == partnerId && p.Status == "completed")
+                .SumAsync(p => p.TokenAmount ?? 0);
+
+            var used    = await db.TokenTransactions
+                .Where(t => t.PartnerId == partnerId)
+                .SumAsync(t => t.TokensUsed);
+
+            var balance = topup - used;
+            if (Math.Abs(dto.Amount) > balance)
+            {
+                logger.LogWarning(
+                    "[PartnerService] AdjustToken insufficient | partnerId={PartnerId} requested={Amount} balance={Balance}",
+                    partnerId, dto.Amount, balance);
+                return ServiceResult<int>.Fail($"Không đủ token. Balance hiện tại: {balance}");
+            }
         }
 
         db.Payments.Add(new Payment
@@ -345,45 +398,24 @@ public class PartnerService(AppDbContext db, IDistributedCache cache) : IPartner
 
         await db.SaveChangesAsync();
 
-        // Xóa token cache và detail cache sau khi adjust
-        await SafeRemoveCacheAsync($"partners:tokens:{partnerId}");
-        await SafeRemoveCacheAsync($"partners:detail:{partnerId}");
+        await cache.RemoveAsync(
+            CacheKeys.PartnerTokens(partnerId),
+            CacheKeys.PartnerDetail(partnerId));
 
-        var (newBalance, _, _) = await CalcTokenBalance(partnerId);
-        return ServiceResult<int>.Ok(newBalance);
-    }
-
-    // ── HELPER: CalcTokenBalance ──────────────────────────────
-    private async Task<(int balance, int topup, int used)> CalcTokenBalance(Guid partnerId)
-    {
-        var topup = await db.Payments
+        var newTopup = await db.Payments
             .Where(p => p.PartnerId == partnerId && p.Status == "completed")
             .SumAsync(p => p.TokenAmount ?? 0);
 
-        var used = await db.TokenTransactions
+        var newUsed = await db.TokenTransactions
             .Where(t => t.PartnerId == partnerId)
             .SumAsync(t => t.TokensUsed);
 
-        return (topup - used, topup, used);
-    }
+        var newBalance = newTopup - newUsed;
 
-    // ── SAFE CACHE HELPERS ────────────────────────────────────
-    private async Task<string?> SafeGetCacheAsync(string key)
-    {
-        try { return await cache.GetStringAsync(key); }
-        catch { return null; }
-    }
+        logger.LogInformation(
+            "[PartnerService] AdjustToken | partnerId={PartnerId} delta={Delta} reason={Reason} newBalance={NewBalance}",
+            partnerId, dto.Amount, dto.Reason, newBalance);
 
-    private async Task SafeSetCacheAsync(string key, string value,
-        DistributedCacheEntryOptions opts)
-    {
-        try { await cache.SetStringAsync(key, value, opts); }
-        catch { }
-    }
-
-    private async Task SafeRemoveCacheAsync(string key)
-    {
-        try { await cache.RemoveAsync(key); }
-        catch { }
+        return ServiceResult<int>.Ok(newBalance);
     }
 }

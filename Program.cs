@@ -3,14 +3,20 @@ using AdminService.API.Middleware;
 using AdminService.Application.Partners;
 using AdminService.Application.Users;
 using DotNetEnv;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Mvc.TagHelpers.Cache;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using platform_ai_backend_netcore.Application.Organization.Interfaces;
 using platform_ai_backend_netcore.Application.Tokens.Interfaces;
+using platform_ai_backend_netcore.Infrastructure.Cache;
 using platform_ai_backend_netcore.Infrastructure.Data;
 using platform_ai_backend_netcore.Infrastructure.Services;
+using Serilog;
+using Serilog.Events;
+using StackExchange.Redis;
 
 // ── Load .env trước mọi thứ ──────────────────────────────────
 Env.Load();
@@ -19,6 +25,101 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ── Map biến môi trường vào Configuration ────────────────────
 builder.Configuration.AddEnvironmentVariables();
+
+//OTEL
+var oltpUrl = Environment.GetEnvironmentVariable("OLTP_URL")
+                ?? throw new InvalidOperationException("OLTP_URL is required");
+var oltpAuth = Environment.GetEnvironmentVariable("OLTP_AUTH")
+                ?? throw new InvalidOperationException("OLTP_AUTH is required");
+var serviceName = Environment.GetEnvironmentVariable("OLTP_SERVICE_NAME")
+                ?? throw new InvalidOperationException("OLTP_SERVICE_NAME is required");
+var oltpEnv = Environment.GetEnvironmentVariable("OLTP_ENVIROMENT")
+                ?? builder.Environment.EnvironmentName.ToLower();
+var serviceVersion = "1.0.0";
+
+string otlpAuthHeader;
+if (string.IsNullOrEmpty(oltpAuth))
+    throw new InvalidOperationException("OLTP_AUTH is required");
+else if (oltpAuth.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+    otlpAuthHeader = oltpAuth;
+else if (oltpAuth.Contains(":"))
+    otlpAuthHeader = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(oltpAuth));
+else otlpAuthHeader = "Basic " + oltpAuth;
+
+var oltpBase = oltpUrl.TrimEnd('/');
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Mircosoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.EntityFrameworkCore.Database.Command", LogEventLevel.Information)
+    .MinimumLevel.Override("System", LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("service.name", serviceName)
+    .Enrich.WithProperty("service.version", serviceVersion)
+    .Enrich.WithProperty("enviroment", oltpEnv)
+    .WriteTo.Console(
+        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {TraceId} | {Message:lj}{NewLine}{Exception}",
+        restrictedToMinimumLevel: LogEventLevel.Debug)
+    .WriteTo.OpenTelemetry(otel =>
+    {
+        otel.Endpoint = $"{oltpBase}/otlp/v1/logs";
+        otel.Protocol = Serilog.Sinks.OpenTelemetry.OtlpProtocol.HttpProtobuf;
+        otel.Headers = new Dictionary<string, string>
+        {
+            ["Authorization"] = otlpAuthHeader,
+        };
+        otel.ResourceAttributes = new Dictionary<string, object>
+        {
+            ["service.name"] = serviceName,
+            ["service.version"] = serviceVersion,
+            ["deployment.enviroment"] = oltpEnv,
+        };
+    })
+    .CreateLogger();
+builder.Host.UseSerilog();
+// ── OpenTelemetry Resource
+var otelResource = ResourceBuilder.CreateDefault()
+.AddService(serviceName, serviceVersion: serviceVersion)
+.AddAttributes(new Dictionary<string, object>
+{
+    ["deployment.enviroment"] = oltpEnv
+});
+
+// ── OpenTelemetry Tracing + Metrics ──────────────────────────
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .SetResourceBuilder(otelResource)
+        .AddAspNetCoreInstrumentation(o =>
+        {
+            o.RecordException = true;
+            o.Filter = ctx =>
+                !ctx.Request.Path.StartsWithSegments("/health") &&
+                !ctx.Request.Path.StartsWithSegments("/metrics");
+        })
+        .AddEntityFrameworkCoreInstrumentation(o =>
+        {
+            o.SetDbStatementForText            = true;
+            o.SetDbStatementForStoredProcedure = true;
+        })
+        .AddHttpClientInstrumentation()
+        // Đẩy trace → Grafana Cloud — path /otlp/v1/traces khớp với Go: WithURLPath("/otlp/v1/traces")
+        .AddOtlpExporter(o =>
+        {
+            o.Endpoint = new Uri($"{oltpBase}/otlp/v1/traces");
+            o.Protocol = OtlpExportProtocol.HttpProtobuf;
+            o.Headers  = $"Authorization={otlpAuthHeader}";
+        }))
+    .WithMetrics(metrics => metrics
+        .SetResourceBuilder(otelResource)
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddOtlpExporter(o =>
+        {
+            o.Endpoint = new Uri($"{oltpBase}/otlp/v1/metrics");
+            o.Protocol = OtlpExportProtocol.HttpProtobuf;
+            o.Headers  = $"Authorization={otlpAuthHeader}";
+        }));
 
 // ── PostgreSQL / Supabase ─────────────────────────────────────
 builder.Services.AddDbContext<AppDbContext>(opt =>
@@ -31,23 +132,29 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
     )
     .UseSnakeCaseNamingConvention()
 );
+//Redis
+var redisConn = Environment.GetEnvironmentVariable("REDIS_URL")
+                ?? throw new InvalidOperationException("REDIS_URL is required");
 
-// ── Redis ─────────────────────────────────────────────────────
-builder.Services.AddStackExchangeRedisCache(opt =>
+builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 {
-    opt.Configuration = Environment.GetEnvironmentVariable("REDIS_CONNECTION");
-    opt.InstanceName = "AdminService:";
+    var config = ConfigurationOptions.Parse(redisConn);
+    config.AbortOnConnectFail = false;
+    return ConnectionMultiplexer.Connect(config);
 });
+builder.Services.AddStackExchangeRedisCache(otp =>
+{
+    otp.Configuration = redisConn;
+    otp.InstanceName = "AdminService";
+});
+builder.Services.AddSingleton<ICacheService, RedisCacheService>();
+
 
 // ── DI ────────────────────────────────────────────────────────
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IPartnerService, PartnerService>();
-// ── Organization ─────────────────────────────────────────────
 builder.Services.AddScoped<IOrganizationService, OrganizationService>();
- 
-// ── Token ────────────────────────────────────────────────────
 builder.Services.AddScoped<ITokenService, TokenService>();
-// ── Controllers ────────────────────────────────────────────────
 builder.Services.AddControllers();
 
 // ── CORS Setup ────────────────────────────────────────────────
@@ -125,10 +232,21 @@ builder.Services.AddCors(opt =>
 
 // ── Health check ──────────────────────────────────────────────
 builder.Services.AddHealthChecks()
-    .AddNpgSql(Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")!);
+    .AddNpgSql(Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")!)
+    .AddRedis(redisConn, name: "redis");
 
 var app = builder.Build();
-
+// Kiểm tra Redis connection lúc startup — xóa sau khi confirm OK
+var redisCheck = app.Services.GetRequiredService<IConnectionMultiplexer>();
+try
+{
+    var pong = await redisCheck.GetDatabase().PingAsync();
+    Log.Information("[REDIS] Connected ✓ | latency={Latency}ms", pong.TotalMilliseconds);
+}
+catch (Exception ex)
+{
+    Log.Error(ex, "[REDIS] Connection FAILED ✗ — cache will be disabled");
+}
 // ── Middleware Pipeline ────────────────────────────────────────
 app.MapHealthChecks("/health");
 
@@ -148,5 +266,7 @@ else
 app.UseMiddleware<JwtAuthMiddleware>();
 
 app.MapControllers();
-
+Log.Information(
+    "[STARTUP] {ServiceName} v{Version} | env={Environment} | otlp={OtlpBase}",
+    serviceName, serviceVersion, oltpEnv, oltpBase);
 app.Run();

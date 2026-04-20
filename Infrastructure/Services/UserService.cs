@@ -1,38 +1,33 @@
 // Infrastructure/Services/UserService.cs
-using System.Text.Json;
 using AdminService.Application.Common;
 using AdminService.Application.Users;
 using AdminService.Application.Users.DTOs;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Distributed;
 using platform_ai_backend_netcore.Application.Users.DTOs;
+using platform_ai_backend_netcore.Infrastructure.Cache;
 using platform_ai_backend_netcore.Infrastructure.Data;
 
 namespace platform_ai_backend_netcore.Infrastructure.Services;
 
-public class UserService(AppDbContext db, IDistributedCache cache) : IUserService
+public class UserService(
+    AppDbContext              db,
+    ICacheService             cache,
+    ILogger<UserService>      logger) : IUserService
 {
-    // List cache: 5 phút — chấp nhận stale nhẹ
-    private static readonly DistributedCacheEntryOptions _listOpts = new()
-    {
-        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5)
-    };
+    private static readonly TimeSpan _listTtl   = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan _detailTtl = TimeSpan.FromMinutes(10);
 
-    // Detail cache: 10 phút
-    private static readonly DistributedCacheEntryOptions _detailOpts = new()
-    {
-        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)
-    };
-
-    // ── GET ALL ───────────────────────────────────────────────
+    // ── GET ALL ────────────────────────────────────────────────
     public async Task<PagedResult<UserDto>> GetAllAsync(QueryUserDto query)
     {
-        var cacheKey = $"list:page={query.Page}:limit={query.Limit}" +
-                       $":status={query.Status ?? ""}:search={query.Search ?? ""}";
-
-        var cached = await SafeGetCacheAsync(cacheKey);
+        var key    = CacheKeys.UserList(query.Page, query.Limit,
+                                        query.Status ?? "", query.Search ?? "");
+        var cached = await cache.GetAsync<PagedResult<UserDto>>(key);
         if (cached is not null)
-            return JsonSerializer.Deserialize<PagedResult<UserDto>>(cached)!;
+        {
+            logger.LogDebug("[UserService] GetAll served from cache | page={Page}", query.Page);
+            return cached;
+        }
 
         var q = db.Users.AsNoTracking().AsQueryable();
 
@@ -44,21 +39,23 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
             var kw = query.Search.ToLower();
             q = q.Where(u =>
                 (u.FullName != null && u.FullName.ToLower().Contains(kw)) ||
-                (u.Email != null && u.Email.ToLower().Contains(kw)));
+                (u.Email    != null && u.Email.ToLower().Contains(kw)));
         }
 
+        // FIX: EF Core DbContext không thread-safe — KHÔNG dùng Task.WhenAll với cùng 1 DbContext.
+        // Chạy tuần tự: count trước, data sau.
         var total = await q.CountAsync();
-        var data = await q
+        var data  = await q
             .OrderByDescending(u => u.CreatedAt)
             .Skip((query.Page - 1) * query.Limit)
             .Take(query.Limit)
             .Select(u => new UserDto
             {
-                Id = u.Id,
-                Email = u.Email,
-                FullName = u.FullName,
+                Id        = u.Id,
+                Email     = u.Email,
+                FullName  = u.FullName,
                 AvatarUrl = u.AvatarUrl,
-                Status = u.Status,
+                Status    = u.Status,
                 CreatedAt = u.CreatedAt,
                 UpdatedAt = u.UpdatedAt,
             })
@@ -66,26 +63,31 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
 
         var result = new PagedResult<UserDto>
         {
-            Data = data,
+            Data  = data,
             Total = total,
-            Page = query.Page,
+            Page  = query.Page,
             Limit = query.Limit,
         };
 
-        await SafeSetCacheAsync(cacheKey, JsonSerializer.Serialize(result), _listOpts);
+        await cache.SetAsync(key, result, _listTtl);
+
+        logger.LogInformation(
+            "[UserService] GetAll | total={Total} page={Page} limit={Limit}",
+            result.Total, query.Page, query.Limit);
 
         return result;
     }
 
-    // ── GET BY ID ─────────────────────────────────────────────
+    // ── GET BY ID ──────────────────────────────────────────────
     public async Task<ServiceResult<UserDetailDto>> GetByIdAsync(Guid id)
     {
-        var cacheKey = $"detail:{id}";
-
-        var cached = await SafeGetCacheAsync(cacheKey);
+        var key    = CacheKeys.UserDetail(id);
+        var cached = await cache.GetAsync<UserDetailDto>(key);
         if (cached is not null)
-            return ServiceResult<UserDetailDto>.Ok(
-                JsonSerializer.Deserialize<UserDetailDto>(cached)!);
+        {
+            logger.LogDebug("[UserService] GetById cache hit | userId={UserId}", id);
+            return ServiceResult<UserDetailDto>.Ok(cached);
+        }
 
         var user = await db.Users
             .AsNoTracking()
@@ -95,77 +97,89 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
             .FirstOrDefaultAsync(u => u.Id == id);
 
         if (user is null)
+        {
+            logger.LogWarning("[UserService] GetById not found | userId={UserId}", id);
             return ServiceResult<UserDetailDto>.Fail("User not found");
+        }
 
         var dto = new UserDetailDto
         {
-            Id = user.Id,
-            FirebaseUid = user.FirebaseUid,
-            Email = user.Email,
-            FullName = user.FullName,
-            AvatarUrl = user.AvatarUrl,
-            Status = user.Status,
-            CreatedAt = user.CreatedAt,
-            UpdatedAt = user.UpdatedAt,
+            Id             = user.Id,
+            FirebaseUid    = user.FirebaseUid,
+            Email          = user.Email,
+            FullName       = user.FullName,
+            AvatarUrl      = user.AvatarUrl,
+            Status         = user.Status,
+            CreatedAt      = user.CreatedAt,
+            UpdatedAt      = user.UpdatedAt,
             ActiveSessions = user.Sessions.Select(s => new UserSessionDto
             {
-                Id = s.Id,
-                DeviceName = s.DeviceName,
-                IpAddress = s.IpAddress,
+                Id           = s.Id,
+                DeviceName   = s.DeviceName,
+                IpAddress    = s.IpAddress,
                 LastActiveAt = s.LastActiveAt,
-                ExpiresAt = s.ExpiresAt,
-                IsRevoked = s.IsRevoked,
-                CreatedAt = s.CreatedAt,
+                ExpiresAt    = s.ExpiresAt,
+                IsRevoked    = s.IsRevoked,
+                CreatedAt    = s.CreatedAt,
             }).ToList(),
         };
 
-        await SafeSetCacheAsync(cacheKey, JsonSerializer.Serialize(dto), _detailOpts);
+        await cache.SetAsync(key, dto, _detailTtl);
+
+        logger.LogInformation(
+            "[UserService] GetById | userId={UserId} email={Email} activeSessions={Sessions}",
+            user.Id, user.Email, dto.ActiveSessions.Count);
 
         return ServiceResult<UserDetailDto>.Ok(dto);
     }
 
-    // ── UPDATE ────────────────────────────────────────────────
+    // ── UPDATE ─────────────────────────────────────────────────
     public async Task<ServiceResult<UserDto>> UpdateAsync(Guid id, UpdateUserDto dto)
     {
         var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
         if (user is null)
+        {
+            logger.LogWarning("[UserService] Update not found | userId={UserId}", id);
             return ServiceResult<UserDto>.Fail("User not found");
+        }
 
-        if (!string.IsNullOrWhiteSpace(dto.Status))
-            user.Status = dto.Status.ToLower();
-
-        if (!string.IsNullOrWhiteSpace(dto.FullName))
-            user.FullName = dto.FullName;
+        var oldStatus = user.Status;
+        if (!string.IsNullOrWhiteSpace(dto.Status))   user.Status   = dto.Status.ToLower();
+        if (!string.IsNullOrWhiteSpace(dto.FullName)) user.FullName = dto.FullName;
 
         user.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
-        // Xóa detail cache — list cache tự expire sau 5 phút
-        await SafeRemoveCacheAsync($"detail:{id}");
+        await cache.RemoveAsync(CacheKeys.UserDetail(id));
+        await cache.RemoveByPrefixAsync(CacheKeys.UserListPrefix);
 
-        var userDto = new UserDto
+        logger.LogInformation(
+            "[UserService] Update | userId={UserId} oldStatus={OldStatus} newStatus={NewStatus}",
+            id, oldStatus, user.Status);
+
+        return ServiceResult<UserDto>.Ok(new UserDto
         {
-            Id = user.Id,
-            Email = user.Email,
-            FullName = user.FullName,
+            Id        = user.Id,
+            Email     = user.Email,
+            FullName  = user.FullName,
             AvatarUrl = user.AvatarUrl,
-            Status = user.Status,
+            Status    = user.Status,
             CreatedAt = user.CreatedAt,
             UpdatedAt = user.UpdatedAt,
-        };
-
-        // Trả về success kèm message và data
-        return ServiceResult<UserDto>.Ok(userDto, "User updated successfully");
+        }, "User updated successfully");
     }
 
-    // ── DELETE ────────────────────────────────────────────────
+    // ── DELETE ─────────────────────────────────────────────────
     public async Task<ServiceResult<bool>> DeleteAsync(Guid id)
     {
         var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
         if (user is null)
+        {
+            logger.LogWarning("[UserService] Delete not found | userId={UserId}", id);
             return ServiceResult<bool>.Fail("User not found");
+        }
 
-        user.Status = "deleted";
+        user.Status    = "deleted";
         user.UpdatedAt = DateTime.UtcNow;
 
         var sessions = await db.UserSessions
@@ -173,33 +187,15 @@ public class UserService(AppDbContext db, IDistributedCache cache) : IUserServic
             .ToListAsync();
 
         sessions.ForEach(s => s.IsRevoked = true);
-
         await db.SaveChangesAsync();
 
-        await SafeRemoveCacheAsync($"detail:{id}");
+        await cache.RemoveAsync(CacheKeys.UserDetail(id));
+        await cache.RemoveByPrefixAsync(CacheKeys.UserListPrefix);
+
+        logger.LogInformation(
+            "[UserService] Delete (soft) | userId={UserId} revokedSessions={Count}",
+            id, sessions.Count);
 
         return ServiceResult<bool>.Ok(true);
-    }
-
-    // ── SAFE CACHE HELPERS ────────────────────────────────────
-    // Wrap tất cả Redis call trong try/catch
-    // Nếu Redis down → fallback về DB, không crash service
-    private async Task<string?> SafeGetCacheAsync(string key)
-    {
-        try { return await cache.GetStringAsync(key); }
-        catch { return null; }
-    }
-
-    private async Task SafeSetCacheAsync(string key, string value,
-        DistributedCacheEntryOptions opts)
-    {
-        try { await cache.SetStringAsync(key, value, opts); }
-        catch { /* Redis down → bỏ qua, không crash */ }
-    }
-
-    private async Task SafeRemoveCacheAsync(string key)
-    {
-        try { await cache.RemoveAsync(key); }
-        catch { /* Redis down → bỏ qua */ }
     }
 }
