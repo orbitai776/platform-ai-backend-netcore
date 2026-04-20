@@ -98,7 +98,7 @@ jobs:
               -e JWT_ISSUER="$JWT_ISSUER" \
               -e JWT_SECRET="$JWT_SECRET" \
               -e JWT_AUDIENCE="$JWT_AUDIENCE" \
-              -e REDIS_URL="$REDIS_CONNECTION" \
+              -e REDIS_URL="$REDIS_URL" \
               -e GATEWAY_URLS="$GATEWAY_URL" \
               -e POSTGRES_CONNECTION="$POSTGRES_CONNECTION" \
               -e OLTP_URL="$OLTP_URL" \
