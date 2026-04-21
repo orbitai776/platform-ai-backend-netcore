@@ -1,8 +1,10 @@
 using System.Text;
+using System.Text.Json;
 using AdminService.API.Middleware;
 using AdminService.Application.Partners;
 using AdminService.Application.Users;
 using DotNetEnv;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc.TagHelpers.Cache;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Exporter;
@@ -267,8 +269,7 @@ builder.Services.AddCors(opt =>
 // ── Health check ──────────────────────────────────────────────
 builder.Services.AddHealthChecks()
     .AddNpgSql(Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")!)
-    .AddRedis(redisUrl, name: "redis");
-
+    .AddCheck<RedisHealthCheck>("redis");
 var app = builder.Build();
 // Kiểm tra Redis connection lúc startup — xóa sau khi confirm OK
 var redisCheck = app.Services.GetRequiredService<IConnectionMultiplexer>();
@@ -282,7 +283,29 @@ catch (Exception ex)
     Log.Error(ex, "[REDIS] Connection FAILED ✗ — cache will be disabled");
 }
 // ── Middleware Pipeline ────────────────────────────────────────
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = async (context, report) =>
+    {
+        context.Response.ContentType = "application/json";
+
+        var result = new
+        {
+            status = report.Status.ToString(),
+            checks = report.Entries.Select(e => new
+            {
+                name = e.Key,
+                status = e.Value.Status.ToString(),
+                duration = e.Value.Duration.TotalMilliseconds,
+                description = e.Value.Description,
+                error = e.Value.Exception?.Message
+            }),
+            totalDuration = report.TotalDuration.TotalMilliseconds
+        };
+
+        await context.Response.WriteAsync(JsonSerializer.Serialize(result));
+    }
+});
 
 if (builder.Environment.IsDevelopment())
 {
