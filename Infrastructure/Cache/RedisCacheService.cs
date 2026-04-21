@@ -12,14 +12,14 @@ public class RedisCacheService(
     IConnectionMultiplexer     redis,
     ILogger<RedisCacheService> logger) : ICacheService
 {
+    
     private static readonly JsonSerializerOptions _json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    // Kiểm tra Redis có đang connected không — KHÔNG gọi network, chỉ đọc trạng thái nội bộ.
-    // StackExchange.Redis track connection state internally → IsConnected là O(1), không block.
-    // Khi Redis down: IsConnected = false → skip hoàn toàn, không tốn 1ms nào.
+    // O(1) — StackExchange.Redis track trạng thái nội bộ, không gọi network.
+    // Khi Redis down: IsConnected = false → skip hoàn toàn, không block.
     private bool IsConnected => redis.IsConnected;
 
     // ── GET ────────────────────────────────────────────────────
@@ -86,26 +86,35 @@ public class RedisCacheService(
         await Task.WhenAll(keys.Select(RemoveOneAsync));
     }
 
-    // ── REMOVE BY PREFIX ───────────────────────────────────────
-    public async Task RemoveByPrefixAsync(string prefix)
+    // ── REMOVE BY PREFIX (SCAN pattern) ────────────────────────
+    /// <summary>
+    /// Xoá tất cả key khớp với pattern — pattern phải là raw Redis key (có InstancePrefix).
+    /// Dùng các *ScanPattern() method từ CacheKeys thay vì tự build string.
+    ///
+    /// Tại sao cần InstancePrefix trong pattern?
+    ///   IDistributedCache.SetStringAsync("development:partner:list:...")
+    ///   → Redis thực tế lưu: "AdminService:development:partner:list:..."
+    ///   → SCAN phải dùng pattern "AdminService:development:partner:list:*" mới match.
+    /// </summary>
+    public async Task RemoveByPrefixAsync(string scanPattern)
     {
         if (!IsConnected) return;
 
         try
         {
             var db     = redis.GetDatabase();
-            var server = redis.GetServers().FirstOrDefault(s => s.IsConnected);
+            var server = redis.GetServers().FirstOrDefault(s => s.IsConnected && !s.IsReplica);
             if (server is null) return;
 
-            var keys = server.Keys(pattern: $"{prefix}*").ToArray();
+            var keys = server.Keys(pattern: scanPattern).ToArray();
             if (keys.Length == 0) return;
 
             await db.KeyDeleteAsync(keys);
-            logger.LogDebug("[CACHE EVICT] prefix={Prefix} count={Count}", prefix, keys.Length);
+            logger.LogDebug("[CACHE EVICT] pattern={Pattern} count={Count}", scanPattern, keys.Length);
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "[CACHE ERROR] RemoveByPrefix prefix={Prefix}", prefix);
+            logger.LogWarning(ex, "[CACHE ERROR] RemoveByPrefix pattern={Pattern}", scanPattern);
         }
     }
 

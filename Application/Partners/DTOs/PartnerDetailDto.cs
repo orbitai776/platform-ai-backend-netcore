@@ -1,17 +1,13 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+// Application/Partners/DTOs/PartnerDetailDto.cs
+namespace platform_ai_backend_netcore.Application.Partners.DTOs;
 
-namespace platform_ai_backend_netcore.Application.Partners.DTOs
+public class PartnerDetailDto : PartnerDto
 {
-    public class PartnerDetailDto : PartnerDto
-    {
-        public int TokenBalance { get; set; }
-        public int TotalTopup { get; set; }
-        public int TotalUsed { get; set; }
-        public List<PartnerServiceSummaryDto> Services { get; set; } = [];
-        public List<RecentTransactionDto> RecentTransactions { get; set; } = [];
-        public List<PaymentSummaryDto> RecentPayments { get; set; } = [];
-    }
+    // Token lấy từ billing_wallet — cached counter, không SUM
+    public int WalletBalance  { get; set; }   // available_tokens
+    public int WalletTotalUsed { get; set; }  // total_used
+
+    public List<PartnerServiceSummaryDto> Services           { get; set; } = [];
+    public List<RecentTransactionDto>     RecentTransactions { get; set; } = [];
+    public List<PaymentSummaryDto>        RecentPayments     { get; set; } = [];
 }

@@ -18,193 +18,210 @@ namespace platform_ai_backend_netcore.Infrastructure.Data
         public DbSet<Service> Services => Set<Service>();
         public DbSet<TokenTransaction> TokenTransactions => Set<TokenTransaction>();
         public DbSet<Payment> Payments => Set<Payment>();
-
+        // Thêm DbSet này vào AppDbContext:
+        public DbSet<BillingWallet> BillingWallets => Set<BillingWallet>();
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
             // ── User ─────────────────────────────────────────────
-        modelBuilder.Entity<User>(e =>
-        {
-            e.HasKey(u => u.Id);
-            e.Property(u => u.Status).HasDefaultValue("active");
-            e.Property(u => u.CreatedAt).HasDefaultValueSql("now()");
-            e.Property(u => u.UpdatedAt).HasDefaultValueSql("now()");
+            modelBuilder.Entity<User>(e =>
+            {
+                e.HasKey(u => u.Id);
+                e.Property(u => u.Status).HasDefaultValue("active");
+                e.Property(u => u.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(u => u.UpdatedAt).HasDefaultValueSql("now()");
 
-            e.HasIndex(u => u.FirebaseUid)
-             .IsUnique()
-             .HasDatabaseName("idx_users_firebase_uid");
+                e.HasIndex(u => u.FirebaseUid)
+                 .IsUnique()
+                 .HasDatabaseName("idx_users_firebase_uid");
 
-            e.HasIndex(u => u.Status)
-             .HasDatabaseName("idx_users_status");
+                e.HasIndex(u => u.Status)
+                 .HasDatabaseName("idx_users_status");
 
-            e.HasMany(u => u.Sessions)
-             .WithOne(s => s.User)
-             .HasForeignKey(s => s.UserId)
-             .OnDelete(DeleteBehavior.Cascade);
-        });
+                e.HasMany(u => u.Sessions)
+                 .WithOne(s => s.User)
+                 .HasForeignKey(s => s.UserId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+            modelBuilder.Entity<BillingWallet>(entity =>
+            {
+                entity.ToTable("billing_wallet");
+                entity.HasKey(e => e.Id);
 
-        // ── UserSession ───────────────────────────────────────
-        modelBuilder.Entity<UserSession>(e =>
-        {
-            e.HasKey(s => s.Id);
-            e.Property(s => s.IsRevoked).HasDefaultValue(false);
-            e.Property(s => s.CreatedAt).HasDefaultValueSql("now()");
+                entity.Property(e => e.Id).HasColumnName("id");
+                entity.Property(e => e.PartnerId).HasColumnName("partner_id");
+                entity.Property(e => e.AvailableTokens).HasColumnName("available_tokens");
+                entity.Property(e => e.TotalUsed).HasColumnName("total_used");
+                entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
 
-            e.HasIndex(s => s.UserId)
-             .HasDatabaseName("idx_user_sessions_user_id");
+                entity.HasIndex(e => e.PartnerId).IsUnique();
 
-            e.HasIndex(s => new { s.UserId, s.IsRevoked })
-             .HasDatabaseName("idx_user_sessions_active");
+                entity.HasOne(e => e.Partner)
+                      .WithOne()
+                      .HasForeignKey<BillingWallet>(e => e.PartnerId);
+            });
+            // ── UserSession ───────────────────────────────────────
+            modelBuilder.Entity<UserSession>(e =>
+            {
+                e.HasKey(s => s.Id);
+                e.Property(s => s.IsRevoked).HasDefaultValue(false);
+                e.Property(s => s.CreatedAt).HasDefaultValueSql("now()");
 
-            e.HasIndex(s => s.ExpiresAt)
-             .HasDatabaseName("idx_user_sessions_expiry");
-        });
+                e.HasIndex(s => s.UserId)
+                 .HasDatabaseName("idx_user_sessions_user_id");
 
-        // ── GuestSession ──────────────────────────────────────
-        modelBuilder.Entity<GuestSession>(e =>
-        {
-            e.HasKey(gs => gs.Id);
-            e.Property(gs => gs.Status).HasDefaultValue("active");
-            e.Property(gs => gs.CreatedAt).HasDefaultValueSql("now()");
+                e.HasIndex(s => new { s.UserId, s.IsRevoked })
+                 .HasDatabaseName("idx_user_sessions_active");
 
-            e.HasIndex(gs => gs.AnonymousId)
-             .IsUnique()
-             .HasDatabaseName("idx_guest_sessions_anon_id");
+                e.HasIndex(s => s.ExpiresAt)
+                 .HasDatabaseName("idx_user_sessions_expiry");
+            });
 
-            e.HasIndex(gs => gs.PartnerServiceId)
-             .HasDatabaseName("idx_guest_sessions_ps_id");
+            // ── GuestSession ──────────────────────────────────────
+            modelBuilder.Entity<GuestSession>(e =>
+            {
+                e.HasKey(gs => gs.Id);
+                e.Property(gs => gs.Status).HasDefaultValue("active");
+                e.Property(gs => gs.CreatedAt).HasDefaultValueSql("now()");
 
-            e.HasIndex(gs => gs.ExpiresAt)
-             .HasDatabaseName("idx_guest_sessions_expiry");
+                e.HasIndex(gs => gs.AnonymousId)
+                 .IsUnique()
+                 .HasDatabaseName("idx_guest_sessions_anon_id");
 
-            e.HasIndex(gs => gs.Status)
-             .HasDatabaseName("idx_guest_sessions_status");
+                e.HasIndex(gs => gs.PartnerServiceId)
+                 .HasDatabaseName("idx_guest_sessions_ps_id");
 
-            e.HasOne(gs => gs.PartnerService)
-             .WithMany()
-             .HasForeignKey(gs => gs.PartnerServiceId)
-             .OnDelete(DeleteBehavior.Restrict);
+                e.HasIndex(gs => gs.ExpiresAt)
+                 .HasDatabaseName("idx_guest_sessions_expiry");
 
-            e.HasOne(gs => gs.ConvertedUser)
-             .WithMany()
-             .HasForeignKey(gs => gs.ConvertedUserId)
-             .OnDelete(DeleteBehavior.SetNull);
-        });
+                e.HasIndex(gs => gs.Status)
+                 .HasDatabaseName("idx_guest_sessions_status");
 
-        // ── Partner ───────────────────────────────────────────
-        modelBuilder.Entity<Partner>(e =>
-        {
-            e.HasKey(p => p.Id);
-            e.Property(p => p.Status).HasDefaultValue("pending");
-            e.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
-            e.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasOne(gs => gs.PartnerService)
+                 .WithMany()
+                 .HasForeignKey(gs => gs.PartnerServiceId)
+                 .OnDelete(DeleteBehavior.Restrict);
 
-            e.HasIndex(p => p.OwnerUserId)
-             .HasDatabaseName("idx_partners_owner");
+                e.HasOne(gs => gs.ConvertedUser)
+                 .WithMany()
+                 .HasForeignKey(gs => gs.ConvertedUserId)
+                 .OnDelete(DeleteBehavior.SetNull);
+            });
 
-            e.HasIndex(p => p.Status)
-             .HasDatabaseName("idx_partners_status");
+            // ── Partner ───────────────────────────────────────────
+            modelBuilder.Entity<Partner>(e =>
+            {
+                e.HasKey(p => p.Id);
+                e.Property(p => p.Status).HasDefaultValue("pending");
+                e.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
 
-            e.HasOne(p => p.OwnerUser)
-             .WithMany()
-             .HasForeignKey(p => p.OwnerUserId)
-             .OnDelete(DeleteBehavior.SetNull);
+                e.HasIndex(p => p.OwnerUserId)
+                 .HasDatabaseName("idx_partners_owner");
 
-            e.HasMany(p => p.PartnerServices)
-             .WithOne(ps => ps.Partner)
-             .HasForeignKey(ps => ps.PartnerId);
+                e.HasIndex(p => p.Status)
+                 .HasDatabaseName("idx_partners_status");
 
-            e.HasMany(p => p.TokenTransactions)
-             .WithOne()
-             .HasForeignKey(t => t.PartnerId);
+                e.HasOne(p => p.OwnerUser)
+                 .WithMany()
+                 .HasForeignKey(p => p.OwnerUserId)
+                 .OnDelete(DeleteBehavior.SetNull);
 
-            e.HasMany(p => p.Payments)
-             .WithOne()
-             .HasForeignKey(pay => pay.PartnerId);
-        });
+                e.HasMany(p => p.PartnerServices)
+                 .WithOne(ps => ps.Partner)
+                 .HasForeignKey(ps => ps.PartnerId);
 
-        // ── ServiceEntity ─────────────────────────────────────
-        modelBuilder.Entity<Service>(e =>
-        {
-            e.HasKey(s => s.Id);
-            e.Property(s => s.Status).HasDefaultValue("active");
-            e.Property(s => s.CreatedAt).HasDefaultValueSql("now()");
-            e.Property(s => s.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasMany(p => p.TokenTransactions)
+                 .WithOne()
+                 .HasForeignKey(t => t.PartnerId);
 
-            e.HasIndex(s => s.Type)
-             .HasDatabaseName("idx_services_type");
+                e.HasMany(p => p.Payments)
+                 .WithOne()
+                 .HasForeignKey(pay => pay.PartnerId);
+            });
 
-            e.HasIndex(s => s.Status)
-             .HasDatabaseName("idx_services_status");
-        });
+            // ── ServiceEntity ─────────────────────────────────────
+            modelBuilder.Entity<Service>(e =>
+            {
+                e.HasKey(s => s.Id);
+                e.Property(s => s.Status).HasDefaultValue("active");
+                e.Property(s => s.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(s => s.UpdatedAt).HasDefaultValueSql("now()");
 
-        // ── PartnerServiceEntity ──────────────────────────────
-        modelBuilder.Entity<PartnerService>(e =>
-        {
-            e.HasKey(ps => ps.Id);
-            e.Property(ps => ps.TokenUsed).HasDefaultValue(0);
-            e.Property(ps => ps.Status).HasDefaultValue("active");
-            e.Property(ps => ps.CreatedAt).HasDefaultValueSql("now()");
-            e.Property(ps => ps.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasIndex(s => s.Type)
+                 .HasDatabaseName("idx_services_type");
 
-            e.Property(ps => ps.AvailableSchedule)
-             .HasColumnType("json");
+                e.HasIndex(s => s.Status)
+                 .HasDatabaseName("idx_services_status");
+            });
 
-            e.Property(ps => ps.Config)
-             .HasColumnType("jsonb");
+            // ── PartnerServiceEntity ──────────────────────────────
+            modelBuilder.Entity<PartnerService>(e =>
+            {
+                e.HasKey(ps => ps.Id);
+                e.Property(ps => ps.TokenUsed).HasDefaultValue(0);
+                e.Property(ps => ps.Status).HasDefaultValue("active");
+                e.Property(ps => ps.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(ps => ps.UpdatedAt).HasDefaultValueSql("now()");
 
-            e.HasIndex(ps => new { ps.PartnerId, ps.ServiceId })
-             .IsUnique()
-             .HasDatabaseName("uq_partner_service");
+                e.Property(ps => ps.AvailableSchedule)
+                 .HasColumnType("json");
 
-            e.HasIndex(ps => ps.PartnerId)
-             .HasDatabaseName("idx_ps_partner_id");
+                e.Property(ps => ps.Config)
+                 .HasColumnType("jsonb");
 
-            e.HasIndex(ps => ps.ServiceId)
-             .HasDatabaseName("idx_ps_service_id");
+                e.HasIndex(ps => new { ps.PartnerId, ps.ServiceId })
+                 .IsUnique()
+                 .HasDatabaseName("uq_partner_service");
 
-            e.HasIndex(ps => ps.Status)
-             .HasDatabaseName("idx_ps_status");
+                e.HasIndex(ps => ps.PartnerId)
+                 .HasDatabaseName("idx_ps_partner_id");
 
-            e.HasOne(ps => ps.Service)
-             .WithMany()
-             .HasForeignKey(ps => ps.ServiceId)
-             .OnDelete(DeleteBehavior.Restrict);
-        });
+                e.HasIndex(ps => ps.ServiceId)
+                 .HasDatabaseName("idx_ps_service_id");
 
-        // ── TokenTransaction ──────────────────────────────────
-        modelBuilder.Entity<TokenTransaction>(e =>
-        {
-            e.HasKey(t => t.Id);
-            e.Property(t => t.CreatedAt).HasDefaultValueSql("now()");
-            e.Property(t => t.Cost).HasColumnType("numeric(10,4)");
+                e.HasIndex(ps => ps.Status)
+                 .HasDatabaseName("idx_ps_status");
 
-            e.HasIndex(t => t.PartnerId)
-             .HasDatabaseName("idx_token_tx_partner");
+                e.HasOne(ps => ps.Service)
+                 .WithMany()
+                 .HasForeignKey(ps => ps.ServiceId)
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
 
-            e.HasIndex(t => t.PartnerServiceId)
-             .HasDatabaseName("idx_token_tx_ps");
+            // ── TokenTransaction ──────────────────────────────────
+            modelBuilder.Entity<TokenTransaction>(e =>
+            {
+                e.HasKey(t => t.Id);
+                e.Property(t => t.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(t => t.Cost).HasColumnType("numeric(10,4)");
 
-            e.HasIndex(t => t.CreatedAt)
-             .HasDatabaseName("idx_token_tx_created");
-        });
+                e.HasIndex(t => t.PartnerId)
+                 .HasDatabaseName("idx_token_tx_partner");
 
-        // ── Payment ───────────────────────────────────────────
-        modelBuilder.Entity<Payment>(e =>
-        {
-            e.HasKey(p => p.Id);
-            e.Property(p => p.Status).HasDefaultValue("pending");
-            e.Property(p => p.Amount).HasColumnType("numeric(10,2)");
-            e.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
-            e.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasIndex(t => t.PartnerServiceId)
+                 .HasDatabaseName("idx_token_tx_ps");
 
-            e.HasIndex(p => p.PartnerId)
-             .HasDatabaseName("idx_payments_partner");
+                e.HasIndex(t => t.CreatedAt)
+                 .HasDatabaseName("idx_token_tx_created");
+            });
 
-            e.HasIndex(p => p.Status)
-             .HasDatabaseName("idx_payments_status");
-        });
+            // ── Payment ───────────────────────────────────────────
+            modelBuilder.Entity<Payment>(e =>
+            {
+                e.HasKey(p => p.Id);
+                e.Property(p => p.Status).HasDefaultValue("pending");
+                e.Property(p => p.Amount).HasColumnType("numeric(10,2)");
+                e.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
+
+                e.HasIndex(p => p.PartnerId)
+                 .HasDatabaseName("idx_payments_partner");
+
+                e.HasIndex(p => p.Status)
+                 .HasDatabaseName("idx_payments_status");
+            });
         }
     }
 }

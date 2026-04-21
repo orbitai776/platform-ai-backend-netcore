@@ -9,30 +9,36 @@ using platform_ai_backend_netcore.Infrastructure.Data;
 
 namespace platform_ai_backend_netcore.Infrastructure.Services;
 
+/// <summary>
+/// Quản lý partner — full data bao gồm services, token balance (từ billing_wallet),
+/// recent transactions và payments.
+/// </summary>
 public class PartnerService(
-    AppDbContext               db,
-    ICacheService              cache,
-    ILogger<PartnerService>    logger) : IPartnerService
+    AppDbContext             db,
+    ICacheService            cache,
+    ILogger<PartnerService>  logger) : IPartnerService
 {
     private static readonly TimeSpan _listTtl   = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan _detailTtl = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan _tokenTtl  = TimeSpan.FromMinutes(2);
 
     // ── GET ALL ────────────────────────────────────────────────
-    public async Task<PagedResult<PartnerDto>> GetAllAsync(QueryPartnerDto query)
+    public async Task<PagedResult<PartnerDetailDto>> GetAllAsync(QueryPartnerDto query)
     {
         var key    = CacheKeys.PartnerList(query.Page, query.Limit,
                                            query.Status ?? "", query.Search ?? "");
-        var cached = await cache.GetAsync<PagedResult<PartnerDto>>(key);
+        var cached = await cache.GetAsync<PagedResult<PartnerDetailDto>>(key);
         if (cached is not null)
         {
-            logger.LogDebug("[PartnerService] GetAll served from cache | page={Page}", query.Page);
+            logger.LogDebug("[PartnerService] GetAll cache hit | page={Page}", query.Page);
             return cached;
         }
 
         var q = db.Partners
             .AsNoTracking()
+            .AsSplitQuery()
             .Include(p => p.OwnerUser)
+            .Include(p => p.PartnerServices).ThenInclude(ps => ps.Service)
             .AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(query.Status))
@@ -46,13 +52,26 @@ public class PartnerService(
                 (p.Email != null && p.Email.ToLower().Contains(kw)));
         }
 
-        // FIX: EF Core DbContext không thread-safe — chạy tuần tự thay vì Task.WhenAll
-        var total = await q.CountAsync();
-        var data  = await q
+        // FIX: EF Core DbContext không thread-safe — chạy tuần tự
+        var total    = await q.CountAsync();
+        var partners = await q
             .OrderByDescending(p => p.CreatedAt)
             .Skip((query.Page - 1) * query.Limit)
             .Take(query.Limit)
-            .Select(p => new PartnerDto
+            .ToListAsync();
+
+        // ✅ Batch query billing_wallet — 1 query cho tất cả partners (thay vì N SUM queries)
+        var partnerIds = partners.Select(p => p.Id).ToList();
+
+        var wallets = await db.BillingWallets
+            .AsNoTracking()
+            .Where(w => partnerIds.Contains(w.PartnerId))
+            .ToDictionaryAsync(w => w.PartnerId);
+
+        var data = partners.Select(p =>
+        {
+            var wallet = wallets.GetValueOrDefault(p.Id);
+            return new PartnerDetailDto
             {
                 Id          = p.Id,
                 Name        = p.Name,
@@ -61,14 +80,34 @@ public class PartnerService(
                 Address     = p.Address,
                 Description = p.Description,
                 Status      = p.Status,
-                OwnerEmail  = p.OwnerUser != null ? p.OwnerUser.Email : null,
-                OwnerName   = p.OwnerUser != null ? p.OwnerUser.FullName : null,
+                OwnerEmail  = p.OwnerUser?.Email,
+                OwnerName   = p.OwnerUser?.FullName,
                 CreatedAt   = p.CreatedAt,
                 UpdatedAt   = p.UpdatedAt,
-            })
-            .ToListAsync();
 
-        var result = new PagedResult<PartnerDto>
+                // Token từ billing_wallet
+                WalletBalance   = wallet?.AvailableTokens ?? 0,
+                WalletTotalUsed = wallet?.TotalUsed       ?? 0,
+
+                // Services — không load recent tx/payments ở list view để tránh N+1
+                Services           = p.PartnerServices.Select(ps => new PartnerServiceSummaryDto
+                {
+                    Id           = ps.Id,
+                    ServiceName  = ps.Service?.Name ?? "",
+                    ServiceType  = ps.Service?.Type ?? "",
+                    CustomName   = ps.Name,
+                    TokenLimit   = ps.TokenLimit,
+                    TokenUsed    = ps.TokenUsed,
+                    StorageLimit = ps.StorageLimit,
+                    Status       = ps.Status,
+                    CreatedAt    = ps.CreatedAt,
+                }).ToList(),
+                RecentTransactions = [],
+                RecentPayments     = [],
+            };
+        }).ToList();
+
+        var result = new PagedResult<PartnerDetailDto>
         {
             Data  = data,
             Total = total,
@@ -80,7 +119,7 @@ public class PartnerService(
 
         logger.LogInformation(
             "[PartnerService] GetAll | total={Total} page={Page} limit={Limit}",
-            result.Total, query.Page, query.Limit);
+            total, query.Page, query.Limit);
 
         return result;
     }
@@ -92,11 +131,11 @@ public class PartnerService(
         var cached = await cache.GetAsync<PartnerDetailDto>(key);
         if (cached is not null)
         {
-            logger.LogDebug("[PartnerService] GetById cache hit | partnerId={PartnerId}", id);
+            logger.LogDebug("[PartnerService] GetById cache hit | partnerId={Id}", id);
             return ServiceResult<PartnerDetailDto>.Ok(cached);
         }
 
-        // FIX: chạy tuần tự — DbContext không hỗ trợ concurrent queries
+        // FIX: AsSplitQuery tránh cartesian explosion khi include nhiều collection
         var partner = await db.Partners
             .AsNoTracking()
             .AsSplitQuery()
@@ -106,10 +145,16 @@ public class PartnerService(
 
         if (partner is null)
         {
-            logger.LogWarning("[PartnerService] GetById not found | partnerId={PartnerId}", id);
+            logger.LogWarning("[PartnerService] GetById not found | partnerId={Id}", id);
             return ServiceResult<PartnerDetailDto>.Fail("Partner not found");
         }
 
+        // ✅ Dùng billing_wallet thay vì SUM — O(1) thay vì O(n)
+        var wallet = await db.BillingWallets
+            .AsNoTracking()
+            .FirstOrDefaultAsync(w => w.PartnerId == id);
+
+        // Lịch sử gần nhất — chạy tuần tự (DbContext không thread-safe)
         var transactions = await db.TokenTransactions
             .AsNoTracking()
             .Where(t => t.PartnerId == id)
@@ -143,33 +188,25 @@ public class PartnerService(
             })
             .ToListAsync();
 
-        var topup = await db.Payments
-            .Where(p => p.PartnerId == id && p.Status == "completed")
-            .SumAsync(p => p.TokenAmount ?? 0);
-
-        var used    = await db.TokenTransactions
-            .Where(t => t.PartnerId == id)
-            .SumAsync(t => t.TokensUsed);
-
-        var balance = topup - used;
-
         var dto = new PartnerDetailDto
         {
-            Id                 = partner.Id,
-            Name               = partner.Name,
-            Email              = partner.Email,
-            Phone              = partner.Phone,
-            Address            = partner.Address,
-            Description        = partner.Description,
-            Status             = partner.Status,
-            OwnerEmail         = partner.OwnerUser?.Email,
-            OwnerName          = partner.OwnerUser?.FullName,
-            TokenBalance       = balance,
-            TotalTopup         = topup,
-            TotalUsed          = used,
-            CreatedAt          = partner.CreatedAt,
-            UpdatedAt          = partner.UpdatedAt,
-            Services           = partner.PartnerServices.Select(ps => new PartnerServiceSummaryDto
+            Id          = partner.Id,
+            Name        = partner.Name,
+            Email       = partner.Email,
+            Phone       = partner.Phone,
+            Address     = partner.Address,
+            Description = partner.Description,
+            Status      = partner.Status,
+            OwnerEmail  = partner.OwnerUser?.Email,
+            OwnerName   = partner.OwnerUser?.FullName,
+            CreatedAt   = partner.CreatedAt,
+            UpdatedAt   = partner.UpdatedAt,
+
+            // Token từ billing_wallet
+            WalletBalance   = wallet?.AvailableTokens ?? 0,
+            WalletTotalUsed = wallet?.TotalUsed       ?? 0,
+
+            Services = partner.PartnerServices.Select(ps => new PartnerServiceSummaryDto
             {
                 Id           = ps.Id,
                 ServiceName  = ps.Service?.Name ?? "",
@@ -181,6 +218,7 @@ public class PartnerService(
                 Status       = ps.Status,
                 CreatedAt    = ps.CreatedAt,
             }).ToList(),
+
             RecentTransactions = transactions,
             RecentPayments     = payments,
         };
@@ -188,8 +226,8 @@ public class PartnerService(
         await cache.SetAsync(key, dto, _detailTtl);
 
         logger.LogInformation(
-            "[PartnerService] GetById | partnerId={PartnerId} name={Name} balance={Balance} services={ServiceCount}",
-            partner.Id, partner.Name, balance, dto.Services.Count);
+            "[PartnerService] GetById | partnerId={Id} name={Name} walletBalance={Balance} services={Count}",
+            partner.Id, partner.Name, dto.WalletBalance, dto.Services.Count);
 
         return ServiceResult<PartnerDetailDto>.Ok(dto);
     }
@@ -200,7 +238,7 @@ public class PartnerService(
         var partner = await db.Partners.FirstOrDefaultAsync(p => p.Id == id);
         if (partner is null)
         {
-            logger.LogWarning("[PartnerService] Update not found | partnerId={PartnerId}", id);
+            logger.LogWarning("[PartnerService] Update not found | partnerId={Id}", id);
             return ServiceResult<PartnerDto>.Fail("Partner not found");
         }
 
@@ -218,8 +256,12 @@ public class PartnerService(
         await cache.RemoveAsync(CacheKeys.PartnerDetail(id));
         await cache.RemoveByPrefixAsync(CacheKeys.PartnerListPrefix);
 
+        // Invalidate org cache — cùng data nguồn
+        await cache.RemoveAsync(CacheKeys.OrgDetail(id));
+        await cache.RemoveByPrefixAsync(CacheKeys.OrgListPrefix);
+
         logger.LogInformation(
-            "[PartnerService] Update | partnerId={PartnerId} oldStatus={OldStatus} newStatus={NewStatus}",
+            "[PartnerService] Update | partnerId={Id} oldStatus={Old} newStatus={New}",
             id, oldStatus, partner.Status);
 
         return ServiceResult<PartnerDto>.Ok(new PartnerDto
@@ -242,7 +284,7 @@ public class PartnerService(
         var partner = await db.Partners.FirstOrDefaultAsync(p => p.Id == id);
         if (partner is null)
         {
-            logger.LogWarning("[PartnerService] Delete not found | partnerId={PartnerId}", id);
+            logger.LogWarning("[PartnerService] Delete not found | partnerId={Id}", id);
             return ServiceResult<bool>.Fail("Partner not found");
         }
 
@@ -261,13 +303,13 @@ public class PartnerService(
 
         await db.SaveChangesAsync();
 
-        await cache.RemoveAsync(
-            CacheKeys.PartnerDetail(id),
-            CacheKeys.PartnerTokens(id));
+        await cache.RemoveAsync(CacheKeys.PartnerDetail(id), CacheKeys.PartnerTokens(id));
         await cache.RemoveByPrefixAsync(CacheKeys.PartnerListPrefix);
+        await cache.RemoveAsync(CacheKeys.OrgDetail(id));
+        await cache.RemoveByPrefixAsync(CacheKeys.OrgListPrefix);
 
         logger.LogInformation(
-            "[PartnerService] Delete (soft) | partnerId={PartnerId} pausedServices={Count}",
+            "[PartnerService] Delete (soft) | partnerId={Id} pausedServices={Count}",
             id, services.Count);
 
         return ServiceResult<bool>.Ok(true);
@@ -280,25 +322,21 @@ public class PartnerService(
         var cached = await cache.GetAsync<TokenInfoDto>(key);
         if (cached is not null)
         {
-            logger.LogDebug("[PartnerService] GetTokens cache hit | partnerId={PartnerId}", partnerId);
+            logger.LogDebug("[PartnerService] GetTokens cache hit | partnerId={Id}", partnerId);
             return ServiceResult<TokenInfoDto>.Ok(cached);
         }
 
         var exists = await db.Partners.AnyAsync(p => p.Id == partnerId);
         if (!exists)
         {
-            logger.LogWarning("[PartnerService] GetTokens partner not found | partnerId={PartnerId}", partnerId);
+            logger.LogWarning("[PartnerService] GetTokens not found | partnerId={Id}", partnerId);
             return ServiceResult<TokenInfoDto>.Fail("Partner not found");
         }
 
-        // FIX: chạy tuần tự
-        var topup = await db.Payments
-            .Where(p => p.PartnerId == partnerId && p.Status == "completed")
-            .SumAsync(p => p.TokenAmount ?? 0);
-
-        var used = await db.TokenTransactions
-            .Where(t => t.PartnerId == partnerId)
-            .SumAsync(t => t.TokensUsed);
+        // ✅ Dùng billing_wallet
+        var wallet = await db.BillingWallets
+            .AsNoTracking()
+            .FirstOrDefaultAsync(w => w.PartnerId == partnerId);
 
         var transactions = await db.TokenTransactions
             .AsNoTracking()
@@ -333,13 +371,11 @@ public class PartnerService(
             })
             .ToListAsync();
 
-        var balance = topup - used;
-
         var dto = new TokenInfoDto
         {
-            Balance      = balance,
-            TotalTopup   = topup,
-            TotalUsed    = used,
+            Balance      = wallet?.AvailableTokens ?? 0,
+            TotalTopup   = 0,   // billing_wallet không lưu total_topup riêng
+            TotalUsed    = wallet?.TotalUsed ?? 0,
             Transactions = transactions,
             Payments     = payments,
         };
@@ -347,8 +383,8 @@ public class PartnerService(
         await cache.SetAsync(key, dto, _tokenTtl);
 
         logger.LogInformation(
-            "[PartnerService] GetTokens | partnerId={PartnerId} balance={Balance} topup={Topup} used={Used}",
-            partnerId, balance, topup, used);
+            "[PartnerService] GetTokens | partnerId={Id} balance={Balance} totalUsed={Used}",
+            partnerId, dto.Balance, dto.TotalUsed);
 
         return ServiceResult<TokenInfoDto>.Ok(dto);
     }
@@ -359,27 +395,23 @@ public class PartnerService(
         var partner = await db.Partners.FirstOrDefaultAsync(p => p.Id == partnerId);
         if (partner is null)
         {
-            logger.LogWarning("[PartnerService] AdjustToken partner not found | partnerId={PartnerId}", partnerId);
+            logger.LogWarning("[PartnerService] AdjustToken not found | partnerId={Id}", partnerId);
             return ServiceResult<int>.Fail("Partner not found");
         }
 
         if (dto.Amount < 0)
         {
-            var topup = await db.Payments
-                .Where(p => p.PartnerId == partnerId && p.Status == "completed")
-                .SumAsync(p => p.TokenAmount ?? 0);
+            var wallet = await db.BillingWallets
+                .AsNoTracking()
+                .FirstOrDefaultAsync(w => w.PartnerId == partnerId);
 
-            var used    = await db.TokenTransactions
-                .Where(t => t.PartnerId == partnerId)
-                .SumAsync(t => t.TokensUsed);
-
-            var balance = topup - used;
-            if (Math.Abs(dto.Amount) > balance)
+            var currentBalance = wallet?.AvailableTokens ?? 0;
+            if (Math.Abs(dto.Amount) > currentBalance)
             {
                 logger.LogWarning(
-                    "[PartnerService] AdjustToken insufficient | partnerId={PartnerId} requested={Amount} balance={Balance}",
-                    partnerId, dto.Amount, balance);
-                return ServiceResult<int>.Fail($"Không đủ token. Balance hiện tại: {balance}");
+                    "[PartnerService] AdjustToken insufficient | partnerId={Id} requested={Amount} balance={Balance}",
+                    partnerId, dto.Amount, currentBalance);
+                return ServiceResult<int>.Fail($"Không đủ token. Balance hiện tại: {currentBalance}");
             }
         }
 
@@ -398,22 +430,17 @@ public class PartnerService(
 
         await db.SaveChangesAsync();
 
-        await cache.RemoveAsync(
-            CacheKeys.PartnerTokens(partnerId),
-            CacheKeys.PartnerDetail(partnerId));
+        await cache.RemoveAsync(CacheKeys.PartnerTokens(partnerId), CacheKeys.PartnerDetail(partnerId));
 
-        var newTopup = await db.Payments
-            .Where(p => p.PartnerId == partnerId && p.Status == "completed")
-            .SumAsync(p => p.TokenAmount ?? 0);
+        // Đọc lại từ billing_wallet sau khi Django service cập nhật
+        var updatedWallet = await db.BillingWallets
+            .AsNoTracking()
+            .FirstOrDefaultAsync(w => w.PartnerId == partnerId);
 
-        var newUsed = await db.TokenTransactions
-            .Where(t => t.PartnerId == partnerId)
-            .SumAsync(t => t.TokensUsed);
-
-        var newBalance = newTopup - newUsed;
+        var newBalance = updatedWallet?.AvailableTokens ?? 0;
 
         logger.LogInformation(
-            "[PartnerService] AdjustToken | partnerId={PartnerId} delta={Delta} reason={Reason} newBalance={NewBalance}",
+            "[PartnerService] AdjustToken | partnerId={Id} delta={Delta} reason={Reason} newBalance={Balance}",
             partnerId, dto.Amount, dto.Reason, newBalance);
 
         return ServiceResult<int>.Ok(newBalance);

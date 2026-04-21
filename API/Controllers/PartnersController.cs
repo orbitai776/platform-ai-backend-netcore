@@ -1,16 +1,20 @@
-// AdminService.API/Controllers/PartnersController.cs
+// API/Controllers/PartnersController.cs
 using AdminService.Application.Partners;
 using Microsoft.AspNetCore.Mvc;
 using platform_ai_backend_netcore.Application.Partners.DTOs;
 
 namespace AdminService.API.Controllers;
 
+/// <summary>
+/// Quản lý partner — full data bao gồm thông tin doanh nghiệp,
+/// wallet balance, services, recent transactions và payments.
+/// </summary>
 [ApiController]
-[Route("v1/api/admin/partners")] 
+[Route("v1/api/admin/partners")]
 [Produces("application/json")]
 public class PartnersController(IPartnerService partnerService) : ControllerBase
 {
-    /// <summary>Lấy danh sách partners — có filter status + search</summary>
+    /// <summary>Danh sách partners — thông tin doanh nghiệp + wallet balance + services</summary>
     [HttpGet]
     public async Task<IActionResult> GetAll([FromQuery] QueryPartnerDto query)
     {
@@ -18,7 +22,7 @@ public class PartnersController(IPartnerService partnerService) : ControllerBase
         return Ok(await partnerService.GetAllAsync(query));
     }
 
-    /// <summary>Lấy chi tiết partner + services + token balance + transactions</summary>
+    /// <summary>Chi tiết partner — full info gồm services, wallet, recent transactions + payments</summary>
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id)
     {
@@ -50,5 +54,4 @@ public class PartnersController(IPartnerService partnerService) : ControllerBase
             ? Ok(new { success = true, message = "Partner đã bị suspend" })
             : NotFound(new { message = result.Message });
     }
-
 }

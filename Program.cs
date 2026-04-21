@@ -50,7 +50,7 @@ var oltpBase = oltpUrl.TrimEnd('/');
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
-    .MinimumLevel.Override("Mircosoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.EntityFrameworkCore.Database.Command", LogEventLevel.Information)
     .MinimumLevel.Override("System", LogEventLevel.Warning)
     .Enrich.FromLogContext()
@@ -98,7 +98,7 @@ builder.Services.AddOpenTelemetry()
         })
         .AddEntityFrameworkCoreInstrumentation(o =>
         {
-            o.SetDbStatementForText            = true;
+            o.SetDbStatementForText = true;
             o.SetDbStatementForStoredProcedure = true;
         })
         .AddHttpClientInstrumentation()
@@ -107,7 +107,7 @@ builder.Services.AddOpenTelemetry()
         {
             o.Endpoint = new Uri($"{oltpBase}/otlp/v1/traces");
             o.Protocol = OtlpExportProtocol.HttpProtobuf;
-            o.Headers  = $"Authorization={otlpAuthHeader}";
+            o.Headers = $"Authorization={otlpAuthHeader}";
         }))
     .WithMetrics(metrics => metrics
         .SetResourceBuilder(otelResource)
@@ -118,7 +118,7 @@ builder.Services.AddOpenTelemetry()
         {
             o.Endpoint = new Uri($"{oltpBase}/otlp/v1/metrics");
             o.Protocol = OtlpExportProtocol.HttpProtobuf;
-            o.Headers  = $"Authorization={otlpAuthHeader}";
+            o.Headers = $"Authorization={otlpAuthHeader}";
         }));
 
 // ── PostgreSQL / Supabase ─────────────────────────────────────
@@ -133,19 +133,53 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
     .UseSnakeCaseNamingConvention()
 );
 //Redis
-var redisConn = Environment.GetEnvironmentVariable("REDIS_URL")
-                ?? throw new InvalidOperationException("REDIS_URL is required");
+// ⚠️  REDIS_URL hỗ trợ 2 format:
+//   1. URI scheme:   redis://user:pass@host:port   (giống gateway, Node.js, Go)
+//   2. SE.Redis:     host:port,password=xxx,ssl=true  (StackExchange native)
+// ParseRedisConfig() chuẩn hoá cả 2 về ConfigurationOptions.
+var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL")
+               ?? throw new InvalidOperationException("REDIS_URL is required");
 
-builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+var redisConfig = ParseRedisConfig(redisUrl);
+redisConfig.AbortOnConnectFail = false;
+redisConfig.ConnectTimeout = 5000;
+redisConfig.SyncTimeout = 3000;
+redisConfig.ReconnectRetryPolicy = new ExponentialRetry(1000, 10_000);
+
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
 {
-    var config = ConfigurationOptions.Parse(redisConn);
-    config.AbortOnConnectFail = false;
-    return ConnectionMultiplexer.Connect(config);
+    var log = sp.GetRequiredService<ILogger<Program>>();
+    try
+    {
+        var mux = ConnectionMultiplexer.Connect(redisConfig);
+
+        mux.ConnectionFailed += (_, e) =>
+            log.LogWarning("[REDIS] Connection LOST — endpoint={Endpoint} failure={Failure}",
+                e.EndPoint, e.FailureType);
+        mux.ConnectionRestored += (_, e) =>
+            log.LogInformation("[REDIS] Connection RESTORED — endpoint={Endpoint}", e.EndPoint);
+        mux.ErrorMessage += (_, e) =>
+            log.LogError("[REDIS] Server error — endpoint={Endpoint} message={Message}",
+                e.EndPoint, e.Message);
+
+        log.LogInformation("[REDIS] Connected ✓ — endpoint={Endpoint}",
+            string.Join(",", redisConfig.EndPoints));
+        return mux;
+    }
+    catch (Exception ex)
+    {
+        log.LogError(ex, "[REDIS] Connection FAILED ✗ — cache will be disabled");
+        // Trả về multiplexer lazy-reconnect, app không crash khi Redis down
+        return ConnectionMultiplexer.Connect(redisConfig);
+    }
 });
-builder.Services.AddStackExchangeRedisCache(otp =>
+
+// ⚠️  InstanceName = "AdminService" → IDistributedCache tự prepend "AdminService:" vào key.
+//     CacheKeys.*ScanPattern() đã include prefix này để SCAN match đúng.
+builder.Services.AddStackExchangeRedisCache(opt =>
 {
-    otp.Configuration = redisConn;
-    otp.InstanceName = "AdminService";
+    opt.ConfigurationOptions = redisConfig;
+    opt.InstanceName = "AdminService:";   // dấu ":" ở cuối để key đẹp hơn
 });
 builder.Services.AddSingleton<ICacheService, RedisCacheService>();
 
@@ -233,7 +267,7 @@ builder.Services.AddCors(opt =>
 // ── Health check ──────────────────────────────────────────────
 builder.Services.AddHealthChecks()
     .AddNpgSql(Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")!)
-    .AddRedis(redisConn, name: "redis");
+    .AddRedis(redisUrl, name: "redis");
 
 var app = builder.Build();
 // Kiểm tra Redis connection lúc startup — xóa sau khi confirm OK
@@ -270,3 +304,38 @@ Log.Information(
     "[STARTUP] {ServiceName} v{Version} | env={Environment} | otlp={OtlpBase}",
     serviceName, serviceVersion, oltpEnv, oltpBase);
 app.Run();
+static ConfigurationOptions ParseRedisConfig(string connStr)
+{
+    if (!connStr.StartsWith("redis://", StringComparison.OrdinalIgnoreCase)
+        && !connStr.StartsWith("rediss://", StringComparison.OrdinalIgnoreCase))
+        return ConfigurationOptions.Parse(connStr);
+
+    var useSsl = connStr.StartsWith("rediss://", StringComparison.OrdinalIgnoreCase);
+    var uri = new Uri(connStr);
+    var host = uri.Host;
+    var port = uri.Port > 0 ? uri.Port : (useSsl ? 6380 : 6379);
+
+    string password = "";
+    if (!string.IsNullOrEmpty(uri.UserInfo))
+    {
+        var parts = uri.UserInfo.Split(':', 2);
+        password = parts.Length == 2
+            ? Uri.UnescapeDataString(parts[1])
+            : Uri.UnescapeDataString(parts[0]);
+    }
+
+    var opts = new ConfigurationOptions();
+    opts.EndPoints.Add(host, port);
+    if (!string.IsNullOrEmpty(password)) opts.Password = password;
+
+    // ✅ FIX: chỉ bật SSL khi scheme là rediss://, KHÔNG dựa vào port
+    opts.Ssl = useSsl;
+    if (opts.Ssl)
+    {
+        opts.SslProtocols = System.Security.Authentication.SslProtocols.Tls12
+                          | System.Security.Authentication.SslProtocols.Tls13;
+        opts.CertificateValidation += (_, _, _, _) => true;
+    }
+
+    return opts;
+}
